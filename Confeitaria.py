@@ -4623,6 +4623,30 @@ class DatabaseDialog(QDialog):
             }}
         """)
         backup_layout.addWidget(self.btn_restore_backup)
+        
+        # Botão para reparar banco corrompido
+        self.btn_repair_db = QPushButton("🔧 Reparar Banco Corrompido")
+        self.btn_repair_db.setMinimumHeight(40)
+        btn_repair_bg = "#dc2626" if not is_dark else "#b91c1c"
+        btn_repair_hover = "#b91c1c" if not is_dark else "#991b1b"
+        self.btn_repair_db.setStyleSheet(f"""
+            QPushButton {{
+                background: {btn_repair_bg};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 18px;
+                font-size: 14px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background: {btn_repair_hover};
+            }}
+            QPushButton:pressed {{
+                background: #991b1b;
+            }}
+        """)
+        backup_layout.addWidget(self.btn_repair_db)
         content_layout.addWidget(backup_group)
         
         # Aviso
@@ -4666,6 +4690,7 @@ class DatabaseDialog(QDialog):
         cast(Any, self.btn_do_backup.clicked).connect(lambda: self.backup_cb() if self.backup_cb else None)
         cast(Any, self.btn_cloud_backup.clicked).connect(self.do_cloud_backup_now)
         cast(Any, self.btn_restore_backup.clicked).connect(self.restore_backup)
+        cast(Any, self.btn_repair_db.clicked).connect(self.repair_database)
         
         # Atualizar labels
         self.update_db_path_label()
@@ -5677,22 +5702,22 @@ End If
                 backup_zip = self._select_cloud_backup()
                 if not backup_zip:
                     return
-            else:  # Local
-                # Seleciona o arquivo ZIP de backup (abre no diretório de backups)
+            else:  # Local - Usa explorador do Windows
                 # Garante que o diretório de backups existe
                 os.makedirs(BACKUP_DIR, exist_ok=True)
-            
-                dlg = CustomFileDialog(
-                    self, 
-                    "Selecionar Backup ZIP", 
-                    filter="Arquivos ZIP (*.zip)",
-                    directory=BACKUP_DIR  # Abre automaticamente no diretório de backups
+                
+                # Usa QFileDialog nativo do Windows para melhor experiência
+                from PyQt6.QtWidgets import QFileDialog
+                
+                backup_zip, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Selecionar Backup ZIP",
+                    BACKUP_DIR,  # Abre no diretório de backups
+                    "Arquivos ZIP (*.zip);;Todos os Arquivos (*.*)"
                 )
                 
-                if not dlg.exec():
+                if not backup_zip:
                     return
-                
-                backup_zip = dlg.get_selected_file()
             
             if not backup_zip or not os.path.isfile(backup_zip):
                 show_message(self, "Erro", "Nenhum arquivo selecionado", ("OK",))
@@ -5745,15 +5770,23 @@ End If
                     print(f"[Restore] 📦 Extraindo backup para verificação...")
                     
                     with zipfile.ZipFile(backup_zip, 'r') as z:
+                        # Lista arquivos no ZIP
+                        zip_contents = z.namelist()
+                        print(f"[Restore] 📋 Arquivos no ZIP: {zip_contents}")
                         z.extractall(temp_dir)
                     
-                    # Verifica se tem arquivo .db
-                    db_files = [f for f in os.listdir(temp_dir) if f.endswith('.db')]
+                    # Lista arquivos extraídos
+                    extracted_files = os.listdir(temp_dir)
+                    print(f"[Restore] 📁 Arquivos extraídos: {extracted_files}")
+                    
+                    # Verifica se tem arquivo .db (ignora -wal e -shm)
+                    db_files = [f for f in extracted_files if f.endswith('.db') and not (f.endswith('-wal') or f.endswith('-shm'))]
                     if not db_files:
                         show_message(
                             self,
                             "Erro",
-                            "O arquivo ZIP não contém um banco de dados (.db)",
+                            f"O arquivo ZIP não contém um banco de dados (.db)\n\n"
+                            f"Arquivos encontrados: {', '.join(extracted_files) if extracted_files else 'nenhum'}",
                             ("OK",)
                         )
                         return
@@ -5762,33 +5795,95 @@ End If
                     restore_db_name = db_files[0]
                     restore_db_path = os.path.join(temp_dir, restore_db_name)
                     
-                    # Valida integridade do banco
+                    print(f"[Restore] 💾 Banco encontrado: {restore_db_name}")
+                    print(f"[Restore] 📂 Caminho completo: {restore_db_path}")
+                    
+                    # Verifica se os arquivos WAL e SHM existem
+                    wal_name = restore_db_name + "-wal"
+                    shm_name = restore_db_name + "-shm"
+                    has_wal = os.path.isfile(os.path.join(temp_dir, wal_name))
+                    has_shm = os.path.isfile(os.path.join(temp_dir, shm_name))
+                    
+                    print(f"[Restore] 📄 WAL presente: {has_wal}")
+                    print(f"[Restore] 📄 SHM presente: {has_shm}")
+                    
+                    # Valida integridade do banco com as novas funções
                     try:
                         import sqlite3
-                        test_conn = sqlite3.connect(restore_db_path)
-                        test_conn.execute("PRAGMA integrity_check")
-                        test_conn.close()
-                        print(f"[Restore] ✅ Integridade do banco validada")
+                        
+                        # Se tiver WAL, precisa consolidar primeiro
+                        if has_wal:
+                            print(f"[Restore] 🔄 Consolidando WAL no banco principal...")
+                            temp_conn = sqlite3.connect(restore_db_path, timeout=10)
+                            temp_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            temp_conn.close()
+                            print(f"[Restore] ✅ WAL consolidado")
+                        
+                        test_conn = sqlite3.connect(restore_db_path, timeout=10)
+                        test_conn.row_factory = sqlite3.Row
+                        
+                        # Usa PRAGMA integrity_check
+                        cur = test_conn.cursor()
+                        result = cur.execute("PRAGMA integrity_check").fetchone()
+                        
+                        if result and result[0] != "ok":
+                            # Banco está corrompido, tenta reparar
+                            print(f"[Restore] ⚠️ Banco corrompido detectado: {result[0]}")
+                            print(f"[Restore] 🔧 Tentando reparar...")
+                            test_conn.close()
+                            
+                            # Usa função de reparo
+                            from core.database import Database
+                            temp_db = Database(restore_db_path)
+                            success, msg = temp_db.repair_database()
+                            
+                            if not success:
+                                show_message(
+                                    self,
+                                    "Erro",
+                                    f"O banco de dados no backup está corrompido e não pôde ser reparado:\n\n{msg}",
+                                    ("OK",)
+                                )
+                                return
+                            
+                            print(f"[Restore] ✅ Banco reparado: {msg}")
+                        else:
+                            test_conn.close()
+                            print(f"[Restore] ✅ Integridade do banco validada")
+                            
                     except Exception as e:
+                        print(f"[Restore] ❌ Erro na validação: {e}")
                         show_message(
                             self,
                             "Erro",
-                            f"O banco de dados no backup está corrompido:\n\n{e}",
+                            f"Erro ao validar o banco de dados no backup:\n\n{e}",
                             ("OK",)
                         )
                         return
                     
+                    # Fecha todas as conexões com o banco atual
+                    try:
+                        if hasattr(self, 'db') and self.db:
+                            print(f"[Restore] 🔌 Fechando conexão atual...")
+                            self.db.conn.close()
+                    except Exception as e:
+                        print(f"[Restore] ⚠️ Erro ao fechar conexão: {e}")
+                    
                     # Remove arquivos antigos
                     try:
+                        print(f"[Restore] 🗑️ Removendo banco antigo...")
                         if os.path.isfile(current_db_path):
                             os.remove(current_db_path)
+                            print(f"[Restore] ✅ Banco principal removido")
                         
                         wal_path = current_db_path + "-wal"
                         shm_path = current_db_path + "-shm"
                         if os.path.isfile(wal_path):
                             os.remove(wal_path)
+                            print(f"[Restore] ✅ WAL removido")
                         if os.path.isfile(shm_path):
                             os.remove(shm_path)
+                            print(f"[Restore] ✅ SHM removido")
                     except Exception as e:
                         print(f"[Restore] ⚠️ Erro ao remover arquivos antigos: {e}")
                     
@@ -6876,6 +6971,110 @@ End If
             return f"{drive_letter.upper()}:" in result.stdout
         except Exception:
             return False
+    
+    def repair_database(self) -> None:
+        """Tenta reparar um banco de dados corrompido"""
+        try:
+            from core.config import get_database_path
+            
+            # Confirma ação
+            response = show_message(
+                self,
+                "🔧 Reparar Banco de Dados",
+                "⚠️ ATENÇÃO: Esta operação tentará reparar o banco de dados corrompido!\n\n"
+                "O processo irá:\n"
+                "• Criar backup do banco corrompido\n"
+                "• Tentar recuperar todos os dados possíveis\n"
+                "• Criar um novo banco com os dados recuperados\n\n"
+                "💾 Recomendamos fazer um backup manual primeiro!\n\n"
+                "Deseja continuar?",
+                ("Sim, Reparar", "Não")
+            )
+            
+            if response != 0:
+                return
+            
+            # Mostra progresso
+            from PyQt6.QtCore import QTimer
+            
+            progress = QProgressDialog(
+                "🔧 Reparando banco de dados...\n\n"
+                "Isso pode levar alguns minutos.\n"
+                "Não feche o programa!",
+                None,
+                0, 0,
+                self
+            )
+            progress.setWindowTitle("Reparando Banco")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.show()
+            QApplication.processEvents()
+            
+            db_path = get_database_path()
+            
+            # Fecha conexão atual se houver
+            try:
+                if hasattr(self, 'db') and self.db:
+                    self.db.conn.close()
+            except:
+                pass
+            
+            # Cria nova instância para reparo
+            from core.database import Database
+            repair_db = Database(db_path)
+            
+            # Verifica integridade primeiro
+            is_ok, msg = repair_db.verify_integrity()
+            
+            if is_ok:
+                progress.close()
+                show_message(
+                    self,
+                    "✅ Banco Íntegro",
+                    "O banco de dados está íntegro e não precisa de reparo!\n\n"
+                    f"Verificação: {msg}",
+                    ("OK",)
+                )
+                return
+            
+            # Banco está corrompido, tenta reparar
+            print(f"[Repair] ⚠️ {msg}")
+            print(f"[Repair] 🔧 Iniciando reparo...")
+            
+            success, repair_msg = repair_db.repair_database()
+            
+            progress.close()
+            
+            if success:
+                show_message(
+                    self,
+                    "✅ Reparo Concluído",
+                    f"Banco de dados reparado com sucesso!\n\n{repair_msg}\n\n"
+                    "⚠️ Reinicie o sistema para aplicar as mudanças.",
+                    ("OK",)
+                )
+                
+                if self.toast_cb:
+                    self.toast_cb("✅ Banco reparado com sucesso")
+            else:
+                show_message(
+                    self,
+                    "❌ Falha no Reparo",
+                    f"Não foi possível reparar o banco de dados:\n\n{repair_msg}\n\n"
+                    "💡 Sugestões:\n"
+                    "• Use 'Restaurar Backup' para restaurar de um backup\n"
+                    "• Entre em contato com o suporte técnico",
+                    ("OK",)
+                )
+                
+        except Exception as e:
+            show_message(
+                self,
+                "Erro",
+                f"Erro ao tentar reparar:\n\n{e}",
+                ("OK",)
+            )
 
 
 class DashboardPage(BasePage):
