@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍰 Painel da Cozinha - Acesso</title>
+    <link rel="icon" type="image/x-icon" href="/logo.ico">
+    <link rel="shortcut icon" href="/logo.ico">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1rem;
+        }
+
+        .info-box {
+            background: #f8f9ff;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: left;
+            border-radius: 8px;
+        }
+
+        .info-box h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+
+        .info-box p {
+            color: #555;
+            line-height: 1.6;
+            margin-bottom: 10px;
+        }
+
+        .access-link {
+            display: block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            margin: 15px 0;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-size: 1.1rem;
+        }
+
+        .access-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+
+        .device-info {
+            background: #fff8e1;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            text-align: left;
+        }
+
+        .device-info strong {
+            color: #f57c00;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .loading {
+            color: #667eea;
+            font-size: 1.2rem;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 1.5rem;
+            }
+
+            .access-link {
+                padding: 12px 20px;
+                font-size: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍰 Painel da Cozinha</h1>
+        <p class="subtitle">Sistema de Gerenciamento de Confeitaria</p>
+
+        <div id="device-info" class="device-info">
+            <strong>📱 Dispositivo Detectado:</strong>
+            <p id="device-type">Detectando...</p>
+        </div>
+
+        <div id="access-options">
+            <div class="loading">⏳ Carregando opções de acesso...</div>
+        </div>
+
+        <div class="info-box">
+            <h3>ℹ️ Informações</h3>
+            <p><strong>Acesso Local:</strong> Use se estiver no mesmo computador do servidor</p>
+            <p><strong>Acesso Rede:</strong> Use de celular ou outro computador na mesma rede Wi-Fi</p>
+        </div>
+    </div>
+
+    <script>
+        // Detectar tipo de dispositivo
+        function detectDevice() {
+            const ua = navigator.userAgent;
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+            const isTablet = /iPad|Android/i.test(ua) && !/Mobile/i.test(ua);
+            
+            if (isMobile) {
+                return '📱 Celular';
+            } else if (isTablet) {
+                return '📱 Tablet';
+            } else {
+                return '💻 Computador';
+            }
+        }
+
+        // Detectar se está em localhost
+        function isLocalhost() {
+            const host = window.location.hostname;
+            return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+        }
+
+        // Obter IP da rede do servidor
+        function getServerIP() {
+            return window.location.hostname;
+        }
+
+        // Verificar conexão com servidor
+        async function checkConnection(url) {
+            try {
+                const response = await fetch(url + '/api/products', { 
+                    method: 'HEAD',
+                    timeout: 3000 
+                });
+                return response.ok;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Gerar opções de acesso
+        async function generateAccessOptions() {
+            const deviceType = detectDevice();
+            const isLocal = isLocalhost();
+            const serverIP = getServerIP();
+            const port = window.location.port || '5000';
+            
+            // Atualizar info do dispositivo
+            document.getElementById('device-type').textContent = deviceType;
+            
+            let html = '';
+            
+            // Se está no localhost, mostrar ambas as opções
+            if (isLocal) {
+                html += `
+                    <a href="http://localhost:${port}/index.html" class="access-link">
+                        🏠 Acesso Local (Este Computador)
+                    </a>
+                    <div class="status success">✅ Recomendado para este dispositivo</div>
+                `;
+                
+                // Tentar descobrir IP da rede
+                html += `
+                    <p style="margin: 20px 0; color: #666;">Para acessar de outros dispositivos:</p>
+                    <div class="info-box">
+                        <p><strong>1.</strong> Verifique o IP no console do sistema</p>
+                        <p><strong>2.</strong> No outro dispositivo, digite: <code>http://IP:${port}</code></p>
+                        <p><strong>3.</strong> Certifique-se que estão na mesma rede Wi-Fi</p>
+                    </div>
+                `;
+            } else {
+                // Está acessando pela rede
+                html += `
+                    <a href="http://${serverIP}:${port}/index.html" class="access-link">
+                        🌐 Acessar Painel da Cozinha
+                    </a>
+                    <div class="status success">✅ Conectado via rede local</div>
+                    
+                    <div class="info-box" style="margin-top: 20px;">
+                        <p><strong>Servidor:</strong> ${serverIP}:${port}</p>
+                        <p><strong>Rede:</strong> Local (mesma Wi-Fi)</p>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('access-options').innerHTML = html;
+        }
+
+        // Executar ao carregar
+        window.addEventListener('DOMContentLoaded', () => {
+            generateAccessOptions();
+        });
+    </script>
+</body>
+</html>

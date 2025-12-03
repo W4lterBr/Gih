@@ -1,0 +1,1800 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🏭 Painel de Produção - Confeitaria</title>
+    <link rel="icon" type="image/x-icon" href="/logo.ico">
+    <link rel="shortcut icon" href="/logo.ico">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-lilac: #C084FC;
+            --light-lilac: #E9D5FF;
+            --lighter-lilac: #F3E8FF;
+            --bg-white: #FFFFFF;
+            --text-dark: #2D2D2D;
+            --text-gray: #6B7280;
+            --shadow: rgba(192, 132, 252, 0.15);
+            --border-color: #E9D5FF;
+            --success-green: #10B981;
+            --warning-yellow: #F59E0B;
+        }
+
+        body.dark-theme {
+            --bg-white: #1F1F1F;
+            --lighter-lilac: #2D1F3D;
+            --text-dark: #F3F4F6;
+            --text-gray: #D1D5DB;
+            --shadow: rgba(192, 132, 252, 0.3);
+            --border-color: #4A3B5C;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, var(--lighter-lilac) 0%, var(--bg-white) 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--text-dark);
+        }
+
+        .container {
+            background: var(--bg-white);
+            border-radius: 24px;
+            box-shadow: 0 20px 60px var(--shadow);
+            padding: 40px;
+            max-width: 1200px;
+            margin: 0 auto;
+            position: relative;
+        }
+
+        /* Menu superior */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .menu-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .menu-btn {
+            padding: 10px 20px;
+            background: var(--lighter-lilac);
+            color: var(--text-dark);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        /* Hover apenas em dispositivos não-touch */
+        @media (hover: hover) {
+            .menu-btn:hover {
+                background: var(--primary-lilac);
+                color: white;
+                border-color: var(--primary-lilac);
+                transform: translateY(-2px);
+            }
+        }
+        
+        .menu-btn:active {
+            transform: scale(0.97);
+        }
+
+        .menu-btn.active {
+            background: linear-gradient(135deg, var(--primary-lilac) 0%, #A855F7 100%);
+            color: white;
+            border-color: var(--primary-lilac);
+            box-shadow: 0 4px 15px rgba(192, 132, 252, 0.3);
+        }
+
+        .theme-toggle {
+            padding: 10px 16px;
+            background: var(--lighter-lilac);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        /* Hover apenas em dispositivos não-touch */
+        @media (hover: hover) {
+            .theme-toggle:hover {
+                transform: scale(1.1) rotate(15deg);
+            }
+        }
+        
+        .theme-toggle:active {
+            transform: scale(0.95);
+        }
+        
+        /* Animação suave para o ícone do tema */
+        .theme-toggle #theme-icon {
+            display: inline-block;
+            transition: transform 0.3s ease;
+        }
+        
+        .theme-toggle.rotating #theme-icon {
+            transform: rotate(180deg);
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--primary-lilac);
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-gray);
+            font-size: 0.95rem;
+            margin-bottom: 30px;
+            font-weight: 300;
+        }
+
+        /* Seções de conteúdo */
+        .content-section {
+            display: none;
+        }
+
+        .content-section.active {
+            display: block;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Lista de produtos (layout original - melhor para celular) */
+        .products-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .product-card {
+            background: var(--lighter-lilac);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .product-card:hover {
+            transform: translateX(3px);
+            box-shadow: 0 4px 15px var(--shadow);
+            background: var(--light-lilac);
+        }
+
+        .product-card:active {
+            transform: scale(0.98);
+        }
+
+        .product-info-left {
+            flex: 1;
+        }
+
+        .product-name {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin-bottom: 4px;
+        }
+
+        .product-desc {
+            font-size: 0.8rem;
+            color: var(--text-gray);
+            margin-bottom: 6px;
+        }
+
+        .product-size {
+            font-size: 0.8rem;
+            color: var(--primary-lilac);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .product-price {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--success-green);
+        }
+
+        .product-stock-display {
+            color: var(--text-gray);
+            font-size: 0.85rem;
+            margin-top: 4px;
+        }
+
+        .product-stock {
+            font-weight: 600;
+            color: var(--primary-lilac);
+            font-size: 1rem;
+            cursor: pointer;
+            padding: 2px 6px;
+            background: var(--bg-white);
+            border-radius: 6px;
+            border: 2px solid transparent;
+            transition: border-color 0.2s, background 0.2s;
+            user-select: none;
+        }
+
+        .product-stock:hover {
+            border-color: var(--primary-lilac);
+            background: var(--light-lilac);
+        }
+
+        .product-stock:active {
+            transform: scale(0.95);
+        }
+
+        .product-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-action {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            font-weight: 700;
+            padding: 0;
+            border: none;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+            box-shadow: 0 2px 8px rgba(192, 132, 252, 0.2);
+        }
+
+        .btn-minus {
+            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+            color: white;
+        }
+
+        .btn-minus:hover {
+            transform: scale(1.08);
+        }
+
+        .btn-plus {
+            background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+            color: white;
+        }
+
+        .btn-plus:hover {
+            transform: scale(1.08);
+        }
+
+        /* Cards de produção (estilo lista também) */
+        .production-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .order-card {
+            background: var(--lighter-lilac);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+            flex-wrap: wrap;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .order-card:hover {
+            transform: translateX(3px);
+            box-shadow: 0 4px 15px var(--shadow);
+            background: var(--light-lilac);
+        }
+
+        .order-card:active {
+            transform: scale(0.98);
+        }
+
+        .order-info {
+            flex: 1;
+            min-width: 180px;
+        }
+
+        .order-customer {
+            font-weight: 600;
+            color: var(--primary-lilac);
+            font-size: 1rem;
+            margin-bottom: 3px;
+        }
+
+        .order-product {
+            color: var(--text-dark);
+            font-size: 0.9rem;
+        }
+
+        .order-size {
+            font-size: 0.8rem;
+            color: var(--primary-lilac);
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
+        .order-date {
+            font-size: 0.8rem;
+            color: var(--text-gray);
+            margin-top: 3px;
+        }
+
+        .order-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .order-quantity {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--primary-lilac);
+            cursor: pointer;
+            padding: 5px 12px;
+            background: var(--bg-white);
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+            transition: border-color 0.2s, background 0.2s;
+            min-width: 55px;
+            text-align: center;
+            user-select: none;
+        }
+
+        .order-quantity:hover {
+            border-color: var(--primary-lilac);
+            background: var(--light-lilac);
+        }
+
+        .order-quantity:active {
+            transform: scale(0.95);
+        }
+
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .status-pending {
+            background: #FEF3C7;
+            color: #92400E;
+        }
+
+        .status-in_production {
+            background: #DBEAFE;
+            color: #1E40AF;
+        }
+
+        .status-completed {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .status-cancelled {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+
+        /* Loading e mensagens */
+        .loading {
+            text-align: center;
+            color: var(--text-gray);
+            padding: 40px;
+            font-size: 1.1rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--text-gray);
+            padding: 60px 20px;
+        }
+
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        /* Modal customizado para input */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            animation: fadeIn 0.2s;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal-box {
+            background: var(--bg-white);
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.3s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: var(--primary-lilac);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .modal-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid var(--border-color);
+            border-radius: 10px;
+            font-size: 1.2rem;
+            font-family: 'Poppins', sans-serif;
+            text-align: center;
+            color: var(--text-dark);
+            background: var(--bg-white);
+            margin-bottom: 20px;
+        }
+        
+        /* Ajuste para select e text inputs dentro de modal */
+        select.modal-input,
+        input[type="text"].modal-input {
+            text-align: left;
+            font-size: 1rem;
+            margin-bottom: 0;
+        }
+        
+        select.modal-input {
+            cursor: pointer;
+        }
+
+        .modal-input:focus {
+            outline: none;
+            border-color: var(--primary-lilac);
+            box-shadow: 0 0 0 4px rgba(192, 132, 252, 0.1);
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .modal-btn, .btn-modal-cancel, .btn-modal-ok {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .modal-btn-cancel, .btn-modal-cancel {
+            background: var(--lighter-lilac);
+            color: var(--text-dark);
+        }
+
+        .modal-btn-cancel:hover, .btn-modal-cancel:hover {
+            background: var(--light-lilac);
+        }
+        
+        .modal-btn-ok, .btn-modal-ok {
+            background: linear-gradient(135deg, var(--primary-lilac) 0%, #A855F7 100%);
+            color: white;
+        }
+        
+        .modal-btn-ok:hover, .btn-modal-ok:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(192, 132, 252, 0.4);
+        }
+        
+        /* Botão adicionar produção */
+        .btn-add-production {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+        }
+        
+        .btn-add-production:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+        }
+        
+        .btn-add-production:active {
+            transform: scale(0.98);
+        }
+        
+        /* Botão produção feita */
+        .btn-complete-production {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, var(--primary-lilac) 0%, #A855F7 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(192, 132, 252, 0.3);
+        }
+        
+        .btn-complete-production:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(192, 132, 252, 0.4);
+        }
+        
+        .btn-complete-production:active {
+            transform: scale(0.98);
+        }
+        
+        .btn-complete-production:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        /* Botão excluir item */
+        .btn-delete-item {
+            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-left: 8px;
+        }
+        
+        .btn-delete-item:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
+        }
+        
+        .btn-delete-item:active {
+            transform: scale(0.95);
+        }
+
+        .modal-btn-confirm {
+            background: linear-gradient(135deg, var(--primary-lilac) 0%, #A855F7 100%);
+            color: white;
+        }
+
+        .modal-btn-confirm:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(192, 132, 252, 0.4);
+        }
+
+        /* Tooltip */
+        .tooltip-hint {
+            font-size: 0.75rem;
+            color: var(--text-gray);
+            font-style: italic;
+            margin-top: 2px;
+        }
+
+        /* Responsivo */
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 1.8rem;
+                margin-top: 60px;
+            }
+
+            .top-bar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .product-card {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+            }
+
+            .product-actions {
+                width: 100%;
+                justify-content: flex-end;
+            }
+
+            .order-card {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .order-right {
+                width: 100%;
+                justify-content: space-between;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 15px;
+            }
+
+            h1 {
+                font-size: 1.6rem;
+            }
+
+            .menu-buttons {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .menu-btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Debug banner para mobile -->
+    <div id="debug-banner" style="display: none; position: fixed; bottom: 0; left: 0; right: 0; background: #667eea; color: white; padding: 10px; text-align: center; font-size: 12px; z-index: 9999;">
+        <div id="debug-info">Debug Mode</div>
+    </div>
+    
+    <div class="container">
+        <!-- Barra superior com menu e tema -->
+        <div class="top-bar">
+            <div class="menu-buttons">
+                <button class="menu-btn" onclick="switchSection('ready-stock')">
+                    ✅ Pronta Entrega
+                </button>
+                <button class="menu-btn active" onclick="switchSection('production')">
+                    🏭 Produção
+                </button>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()" title="Alternar tema">
+                <span id="theme-icon">🌙</span>
+            </button>
+        </div>
+
+        <h1 id="page-title">🏭 Produção</h1>
+        <p class="subtitle" id="page-subtitle">Pedidos em andamento e programados</p>
+
+        <!-- Seção: Pronta Entrega -->
+        <div id="section-ready-stock" class="content-section">
+            <div id="ready-stock-container" class="products-grid">
+                <div class="loading">⏳ Carregando estoque...</div>
+            </div>
+        </div>
+
+        <!-- Seção: Produção -->
+        <div id="section-production" class="content-section active">
+            <!-- Botões de ação -->
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn-add-production" onclick="showAddProductionModal()" title="Adicionar item à lista de produção">
+                    ➕ Adicionar Item
+                </button>
+                <button class="btn-complete-production" onclick="completeProduction()" title="Marcar produção como concluída e adicionar ao estoque">
+                    ✅ Produção feita
+                </button>
+            </div>
+            
+            <div id="production-container" class="production-list">
+                <div class="loading">⏳ Carregando pedidos...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para adicionar item à produção -->
+    <div id="add-production-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-box">
+            <div class="modal-title">➕ Adicionar Item à Produção</div>
+            
+            <label for="add-product-select" style="display: block; margin-bottom: 5px; font-weight: 600;">Produto:</label>
+            <select id="add-product-select" class="modal-input" style="margin-bottom: 15px;">
+                <option value="">Carregando produtos...</option>
+            </select>
+            
+            <label for="add-quantity-input" style="display: block; margin-bottom: 5px; font-weight: 600;">Quantidade:</label>
+            <input type="number" 
+                   id="add-quantity-input" 
+                   class="modal-input" 
+                   placeholder="Ex: 5"
+                   min="1"
+                   value="1"
+                   style="margin-bottom: 15px;">
+            
+            <label for="add-size-input" style="display: block; margin-bottom: 5px; font-weight: 600;">Tamanho (opcional):</label>
+            <input type="text" 
+                   id="add-size-input" 
+                   class="modal-input" 
+                   placeholder="Ex: 30cm, P, M, G"
+                   style="margin-bottom: 15px;">
+            
+            <div class="modal-buttons">
+                <button class="btn-modal-cancel" onclick="closeAddProductionModal()">Cancelar</button>
+                <button class="btn-modal-ok" onclick="confirmAddProduction()">Adicionar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal customizado para entrada de quantidade -->
+    <div id="quantity-modal" class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-title" id="modal-title">Digite a quantidade</div>
+            <input type="number" 
+                   id="modal-input" 
+                   class="modal-input" 
+                   placeholder="0"
+                   min="0"
+                   autofocus>
+            <div class="tooltip-hint">💡 Dica: Clique 2x no estoque para editar rapidamente</div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" onclick="closeModal()">
+                    Cancelar
+                </button>
+                <button class="modal-btn modal-btn-confirm" onclick="confirmQuantity()">
+                    ✓ Confirmar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Estado global
+        let currentSection = 'production';
+        let refreshIntervals = {
+            'ready-stock': null,
+            production: null
+        };
+
+        // Cache para cada seção
+        let readyStockCache = [];
+        let productionCache = [];
+        
+        // Variáveis do modal
+        let modalCallback = null;
+        
+        // Verificação de conectividade
+        let connectionRetries = 0;
+        const MAX_RETRIES = 3;
+        
+        // Detectar se está em dispositivo móvel
+        function isMobile() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        }
+        
+        // Mostrar banner de conexão
+        function showConnectionError(isInitial = false) {
+            const container = document.querySelector('.container');
+            if (!container) return;
+            
+            let errorDiv = document.getElementById('connection-error');
+            if (!errorDiv) {
+                errorDiv = document.createElement('div');
+                errorDiv.id = 'connection-error';
+                errorDiv.style.cssText = `
+                    background: #FEE2E2;
+                    border: 2px solid #EF4444;
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin-bottom: 20px;
+                    color: #991B1B;
+                    text-align: center;
+                `;
+                container.insertBefore(errorDiv, container.firstChild);
+            }
+            
+            const deviceType = isMobile() ? 'celular' : 'dispositivo';
+            const serverIP = window.location.hostname;
+            
+            errorDiv.innerHTML = `
+                <h3 style="margin-bottom: 10px;">⚠️ Erro de Conexão</h3>
+                <p style="margin-bottom: 10px;">Não foi possível conectar ao servidor.</p>
+                ${isMobile() ? `
+                    <p style="margin-bottom: 10px;"><strong>Verifique:</strong></p>
+                    <ul style="list-style: none; padding: 0;">
+                        <li>✓ ${deviceType} está na MESMA rede Wi-Fi do servidor</li>
+                        <li>✓ Sistema Confeitaria está rodando no PC (${serverIP})</li>
+                        <li>✓ Firewall está configurado (execute liberar_porta_5000.ps1)</li>
+                    </ul>
+                ` : `
+                    <p><strong>Certifique-se que o sistema Confeitaria está rodando.</strong></p>
+                `}
+                <button onclick="location.reload()" style="
+                    margin-top: 15px;
+                    padding: 10px 20px;
+                    background: #EF4444;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-weight: 600;
+                ">🔄 Tentar Novamente</button>
+            `;
+        }
+        
+        function hideConnectionError() {
+            const errorDiv = document.getElementById('connection-error');
+            if (errorDiv) {
+                errorDiv.remove();
+            }
+            connectionRetries = 0;
+        }
+
+        // Função para formatar tamanho(s) adicionando 'cm'
+        function formatSize(sizeStr) {
+            if (!sizeStr) return '';
+            
+            // Separa por vírgula, adiciona 'cm' a cada valor e junta novamente
+            const sizes = sizeStr.split(',').map(s => s.trim()).filter(s => s);
+            const formatted = sizes.map(s => {
+                // Adiciona 'cm' apenas se já não tiver
+                if (s.endsWith(' cm') || s.endsWith('cm')) {
+                    return s;
+                }
+                return `${s} cm`;
+            });
+            return formatted.join(', ');
+        }
+
+        // Funções do modal
+        function openModal(title, currentValue, callback) {
+            const modal = document.getElementById('quantity-modal');
+            const input = document.getElementById('modal-input');
+            const titleEl = document.getElementById('modal-title');
+            
+            titleEl.textContent = title;
+            input.value = currentValue || '';
+            modalCallback = callback;
+            
+            modal.classList.add('active');
+            setTimeout(() => {
+                input.focus();
+                input.select();
+            }, 100);
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('quantity-modal');
+            modal.classList.remove('active');
+            modalCallback = null;
+        }
+
+        function confirmQuantity() {
+            const input = document.getElementById('modal-input');
+            const value = input.value.trim();
+            
+            if (modalCallback && value !== '') {
+                modalCallback(value);
+            }
+            
+            closeModal();
+        }
+
+        // Permitir Enter para confirmar
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('modal-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    confirmQuantity();
+                } else if (e.key === 'Escape') {
+                    closeModal();
+                }
+            });
+        });
+
+        // Fechar modal ao clicar fora
+        document.addEventListener('click', (e) => {
+            const modal = document.getElementById('quantity-modal');
+            if (e.target === modal) {
+                closeModal();
+            }
+        });
+
+        // Gerenciamento de tema
+        function loadTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            applyTheme(savedTheme);
+        }
+
+        function applyTheme(theme) {
+            const themeBtn = document.querySelector('.theme-toggle');
+            
+            // Adicionar classe de rotação
+            if (themeBtn) {
+                themeBtn.classList.add('rotating');
+                setTimeout(() => themeBtn.classList.remove('rotating'), 300);
+            }
+            
+            if (theme === 'dark') {
+                document.body.classList.add('dark-theme');
+                document.getElementById('theme-icon').textContent = '☀️';
+            } else {
+                document.body.classList.remove('dark-theme');
+                document.getElementById('theme-icon').textContent = '🌙';
+            }
+            localStorage.setItem('theme', theme);
+        }
+
+        function toggleTheme() {
+            console.log('🌓 toggleTheme chamada');
+            if (window.updateDebug) window.updateDebug('🌓 Alternando tema...');
+            const isDark = document.body.classList.contains('dark-theme');
+            applyTheme(isDark ? 'light' : 'dark');
+            console.log('✅ Tema alterado para:', isDark ? 'light' : 'dark');
+        }
+
+        // Troca de seção
+        function switchSection(section) {
+            console.log('🔄 switchSection chamada para:', section);
+            if (window.updateDebug) window.updateDebug(`🔄 Trocando para: ${section}`);
+            
+            // Parar atualizações da seção anterior
+            if (refreshIntervals[currentSection]) {
+                clearInterval(refreshIntervals[currentSection]);
+                refreshIntervals[currentSection] = null;
+            }
+            
+            // Atualizar botões ativos
+            document.querySelectorAll('.menu-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.textContent.includes('Pronta Entrega') && section === 'ready-stock') {
+                    btn.classList.add('active');
+                    console.log('✅ Botão Pronta Entrega ativado');
+                } else if (btn.textContent.includes('Produção') && section === 'production') {
+                    btn.classList.add('active');
+                    console.log('✅ Botão Produção ativado');
+                }
+            });
+
+            // Esconder todas as seções
+            document.querySelectorAll('.content-section').forEach(sec => {
+                sec.classList.remove('active');
+            });
+
+            // Mostrar seção selecionada
+            currentSection = section;
+            
+            const sectionMap = {
+                'ready-stock': {
+                    id: 'section-ready-stock',
+                    title: '✅ Pronta Entrega',
+                    subtitle: 'Produtos disponíveis para venda imediata'
+                },
+                'production': {
+                    id: 'section-production',
+                    title: '🏭 Produção',
+                    subtitle: 'Pedidos em andamento e programados'
+                }
+            };
+
+            const info = sectionMap[section];
+            document.getElementById('page-title').textContent = info.title;
+            document.getElementById('page-subtitle').textContent = info.subtitle;
+            document.getElementById(info.id).classList.add('active');
+
+            // Carregar dados da seção imediatamente
+            loadSectionData(section);
+            
+            // Iniciar auto-refresh para esta seção (a cada 1.5 segundos para sincronização em tempo real)
+            refreshIntervals[section] = setInterval(() => {
+                console.log(`🔄 Auto-refresh: ${section}`);
+                if (window.updateDebug) window.updateDebug(`🔄 Atualizando ${section}...`);
+                loadSectionData(section);
+            }, 1500);
+            
+            console.log(`✅ Auto-refresh iniciado para: ${section}`);
+        }
+
+        // Carregar dados conforme a seção
+        function loadSectionData(section) {
+            if (section === 'ready-stock') {
+                loadReadyStock();
+            } else if (section === 'production') {
+                loadProduction();
+            }
+        }
+
+        // ====== PRONTA ENTREGA ======
+        async function loadReadyStock() {
+            try {
+                const response = await fetch('/api/ready-stock');
+                const data = await response.json();
+
+                const container = document.getElementById('ready-stock-container');
+
+                if (!data.success || !data.products || data.products.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <p>Nenhum produto em estoque</p>
+                        </div>
+                    `;
+                    readyStockCache = [];
+                    return;
+                }
+
+                const hasChanged = JSON.stringify(readyStockCache.map(p => p.id)) !== JSON.stringify(data.products.map(p => p.id));
+
+                if (hasChanged || container.children.length === 0) {
+                    container.innerHTML = data.products.map(product => `
+                        <div class="product-card" 
+                             data-card-id="${product.id}"
+                             onclick="setExactQuantity(${product.id}, 'ready-stock')"
+                             title="💡 Clique para editar a quantidade">
+                            <div class="product-info-left">
+                                <div class="product-name">${product.name}</div>
+                                <div class="product-desc">${product.description || 'Sem descrição'}</div>
+                                ${product.size ? `<div class="product-size">📏 Tamanho: ${formatSize(product.size)}</div>` : ''}
+                                <div class="product-stock-display">
+                                    Estoque: 
+                                    <span class="product-stock" data-product-id="${product.id}">
+                                        ${product.stock} un
+                                    </span>
+                                </div>
+                                ${product.min_quantity ? `<div class="product-min" style="font-size: 0.85rem; color: var(--text-gray); margin-top: 4px;">Mínimo: ${product.min_quantity} un</div>` : ''}
+                            </div>
+                            <div class="product-actions" onclick="event.stopPropagation()">
+                                <button class="btn-action btn-minus" onclick="adjustQuantity(${product.id}, -1, 'ready-stock')">−</button>
+                                <button class="btn-action btn-plus" onclick="adjustQuantity(${product.id}, 1, 'ready-stock')">+</button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    // Atualizar apenas os números de estoque
+                    data.products.forEach(product => {
+                        const stockElement = document.querySelector(`#ready-stock-container [data-product-id="${product.id}"]`);
+                        if (stockElement) {
+                            const cached = readyStockCache.find(p => p.id === product.id);
+                            if (!cached || cached.stock !== product.stock) {
+                                stockElement.style.transition = 'all 0.3s ease';
+                                stockElement.style.background = '#C084FC';
+                                stockElement.style.color = 'white';
+                                stockElement.style.padding = '2px 8px';
+                                stockElement.style.borderRadius = '6px';
+                                stockElement.textContent = `${product.stock} un`;
+                                
+                                setTimeout(() => {
+                                    stockElement.style.background = '';
+                                    stockElement.style.color = '';
+                                    stockElement.style.padding = '';
+                                }, 1000);
+                                
+                                console.log(`📊 Pronta Entrega atualizada: ${product.name} → ${product.stock}`);
+                            }
+                        }
+                    });
+                }
+
+                readyStockCache = data.products;
+            } catch (error) {
+                console.error('Erro ao carregar pronta entrega:', error);
+                document.getElementById('ready-stock-container').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <p>Erro ao carregar produtos</p>
+                    </div>
+                `;
+            }
+        }
+
+        // ====== LISTA DE PRODUÇÃO ======
+        async function loadProduction() {
+            // Não atualizar se modal de edição estiver aberto
+            if (document.getElementById('edit-modal')) {
+                console.log('⏸️ Refresh pausado (modal aberto)');
+                return;
+            }
+            
+            console.log('🏭 Carregando lista de produção...');
+            if (window.updateDebug) window.updateDebug('🏭 Carregando produção...');
+            
+            try {
+                const response = await fetch('/api/production');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log('✅ Lista de produção recebida:', data.orders?.length, 'itens');
+                
+                // Conexão bem-sucedida
+                hideConnectionError();
+
+                const container = document.getElementById('production-container');
+
+                if (!data.success || !data.orders || data.orders.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <p>Nenhum pedido em produção</p>
+                        </div>
+                    `;
+                    productionCache = [];
+                    return;
+                }
+
+                const hasChanged = JSON.stringify(productionCache.map(o => o.id)) !== JSON.stringify(data.orders.map(o => o.id));
+
+                if (hasChanged || container.children.length === 0) {
+                    container.innerHTML = data.orders.map(order => {
+                        const formattedDate = order.delivery_date ? formatDate(order.delivery_date) : '';
+                        const statusClass = `status-${order.status}`;
+                        const statusText = getStatusText(order.status);
+                        const isManual = order.source === 'manual';
+                        
+                        // Botão de excluir apenas para itens manuais (com data-item-id para event listener)
+                        const deleteBtn = isManual ? 
+                            `<button class="btn-delete-item" data-delete-id="${order.id}" title="Remover item">🗑️ Excluir</button>` : 
+                            '';
+
+                        return `
+                            <div class="order-card" 
+                                 data-order-card-id="${order.id}"
+                                 style="cursor: pointer;"
+                                 title="💡 Clique para editar quantidade, tamanho e observações">
+                                <div class="order-info">
+                                    <div class="order-customer">${order.customer}</div>
+                                    <div class="order-product">${order.product}</div>
+                                    ${order.size ? `<div class="order-size">📏 Tamanho: ${formatSize(order.size)}</div>` : ''}
+                                    ${order.notes ? `<div class="order-notes" style="color: var(--text-gray); font-size: 0.9em; margin-top: 5px;">📝 Obs: ${order.notes}</div>` : ''}
+                                    ${formattedDate ? `<div class="order-date">📅 ${formattedDate}</div>` : ''}
+                                </div>
+                                <div class="order-right">
+                                    <span class="order-quantity" data-order-id="${order.id}">
+                                        ${order.quantity} un
+                                    </span>
+                                    ${isManual ? 
+                                        `<span class="status-badge status-pending">📝 Manual</span>` :
+                                        `<span class="status-badge ${statusClass}" 
+                                              data-order-status="${order.id}"
+                                              data-status-value="${order.status}"
+                                              style="cursor: pointer;"
+                                              title="Clique para alterar o status">
+                                            ${statusText}
+                                        </span>`
+                                    }
+                                    ${deleteBtn}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                    
+                    console.log('🔧 Adicionando event listeners aos cards...');
+                    
+                    // Adicionar event listeners após criar os elementos
+                    document.querySelectorAll('.order-card').forEach(card => {
+                        const orderId = card.getAttribute('data-order-card-id');
+                        console.log('  ➕ Event listener adicionado ao card:', orderId);
+                        
+                        // Suporte para clique único E duplo clique
+                        card.addEventListener('click', function(e) {
+                            // Não abrir modal se clicou em botão ou badge de status
+                            if (e.target.closest('.btn-delete-item') || e.target.closest('[data-order-status]')) {
+                                console.log('  ⚠️ Clique ignorado (em botão interno)');
+                                return;
+                            }
+                            console.log('🖱️ Clique simples detectado:', orderId);
+                            setOrderQuantity(orderId);
+                        });
+                        
+                        card.addEventListener('dblclick', function(e) {
+                            // Não abrir modal se clicou em botão ou badge de status
+                            if (e.target.closest('.btn-delete-item') || e.target.closest('[data-order-status]')) {
+                                console.log('  ⚠️ Duplo clique ignorado (em botão interno)');
+                                return;
+                            }
+                            console.log('🖱️🖱️ Duplo clique detectado:', orderId);
+                            setOrderQuantity(orderId);
+                        });
+                    });
+                    
+                    console.log(`✅ ${document.querySelectorAll('.order-card').length} event listeners adicionados`);
+                    
+                    // Event listeners para botões de excluir
+                    document.querySelectorAll('.btn-delete-item').forEach(btn => {
+                        const itemId = btn.getAttribute('data-delete-id');
+                        btn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            deleteProductionItem(itemId);
+                        });
+                    });
+                    
+                    // Event listeners para badges de status
+                    document.querySelectorAll('[data-order-status]').forEach(badge => {
+                        const orderId = badge.getAttribute('data-order-status');
+                        const status = badge.getAttribute('data-status-value');
+                        badge.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            cycleStatus(orderId, status);
+                        });
+                    });
+                    
+                } else {
+                    // Atualizar apenas quantidade e status (sem recriar HTML)
+                    data.orders.forEach(order => {
+                        const cached = productionCache.find(o => o.id === order.id);
+                        
+                        // Atualizar quantidade
+                        const qtyElement = document.querySelector(`[data-order-id="${order.id}"]`);
+                        if (qtyElement && (!cached || cached.quantity !== order.quantity)) {
+                            // Destacar a mudança brevemente
+                            qtyElement.style.transition = 'all 0.3s ease';
+                            qtyElement.style.background = '#C084FC';
+                            qtyElement.style.color = 'white';
+                            qtyElement.style.padding = '4px 12px';
+                            qtyElement.style.borderRadius = '8px';
+                            qtyElement.textContent = `${order.quantity} un`;
+                            
+                            setTimeout(() => {
+                                qtyElement.style.background = '';
+                                qtyElement.style.color = '';
+                                qtyElement.style.padding = '';
+                            }, 1000);
+                            
+                            console.log(`📊 Quantidade do pedido atualizada: ${order.customer} → ${order.quantity}`);
+                        }
+                        
+                        // Atualizar status
+                        const statusElement = document.querySelector(`[data-order-status="${order.id}"]`);
+                        if (statusElement && (!cached || cached.status !== order.status)) {
+                            statusElement.className = `status-badge status-${order.status}`;
+                            statusElement.textContent = getStatusText(order.status);
+                            statusElement.setAttribute('onclick', `cycleStatus(${order.id}, '${order.status}')`);
+                            
+                            console.log(`📊 Status do pedido atualizado: ${order.customer} → ${order.status}`);
+                        }
+                    });
+                }
+
+                productionCache = data.orders;
+            } catch (error) {
+                console.error('❌ ERRO ao carregar produção:', error);
+                if (window.updateDebug) window.updateDebug(`❌ ERRO: ${error.message}`);
+                
+                connectionRetries++;
+                if (connectionRetries >= MAX_RETRIES) {
+                    showConnectionError(true);
+                }
+                
+                document.getElementById('production-container').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <p>Erro ao carregar lista de produção</p>
+                        <p style="font-size: 0.9rem; color: var(--text-gray); margin-top: 10px;">
+                            ${error.message || 'Verifique a conexão com o servidor'}
+                        </p>
+                    </div>
+                `;
+            }
+        }
+
+        // Formatar data
+        function formatDate(dateStr) {
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('pt-BR');
+        }
+
+        // Textos de status
+        function getStatusText(status) {
+            const texts = {
+                'pending': '⏳ Pendente',
+                'in_production': '🏭 Produzindo',
+                'completed': '✅ Concluído',
+                'cancelled': '❌ Cancelado'
+            };
+            return texts[status] || status;
+        }
+
+        // Ciclar entre status ao clicar
+        async function cycleStatus(orderId, currentStatus) {
+            const statusCycle = {
+                'pending': 'in_production',
+                'in_production': 'completed',
+                'completed': 'cancelled',
+                'cancelled': 'pending'
+            };
+
+            const newStatus = statusCycle[currentStatus];
+
+            try {
+                const response = await fetch(`/api/production/${orderId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus })
+                });
+
+                if (response.ok) {
+                    loadProduction();
+                }
+            } catch (error) {
+                console.error('Erro ao atualizar status:', error);
+            }
+        }
+
+        // Ajustar quantidade (+ ou -)
+        async function adjustQuantity(productId, change, section) {
+            try {
+                const response = await fetch(`/api/products/${productId}/adjust`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ change: change })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const stockElement = document.querySelector(`[data-product-id="${productId}"]`);
+                    if (stockElement) {
+                        stockElement.textContent = `${data.new_quantity} un`;
+                    }
+                }
+            } catch (error) {
+                console.error('Erro ao ajustar quantidade:', error);
+            }
+        }
+
+        // Definir quantidade exata (clique no card)
+        async function setExactQuantity(productId, section) {
+            const stockElement = document.querySelector(`[data-product-id="${productId}"]`);
+            const currentValue = stockElement ? parseInt(stockElement.textContent) : 0;
+
+            openModal('Digite a nova quantidade', currentValue, async (value) => {
+                const quantity = parseInt(value);
+                if (isNaN(quantity) || quantity < 0) {
+                    alert('⚠️ Quantidade inválida!');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/products/${productId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ quantity: quantity })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (stockElement) {
+                            stockElement.textContent = `${data.new_quantity} un`;
+                        }
+                    } else {
+                        alert('❌ Erro ao atualizar quantidade');
+                    }
+                } catch (error) {
+                    console.error('Erro ao definir quantidade:', error);
+                    alert('❌ Erro ao atualizar quantidade');
+                }
+            });
+        }
+
+        // Definir quantidade de pedido (clique no item)
+        async function setOrderQuantity(orderId) {
+            console.log('🖱️ Clique detectado no item:', orderId);
+            
+            // Buscar dados atuais do item usando o data-order-card-id
+            const card = document.querySelector(`[data-order-card-id="${orderId}"]`);
+            if (!card) {
+                console.error('❌ Card não encontrado para orderId:', orderId);
+                alert('Erro: Item não encontrado');
+                return;
+            }
+            
+            const qtyElement = card.querySelector(`[data-order-id="${orderId}"]`);
+            const sizeElement = card.querySelector('.order-size');
+            const notesElement = card.querySelector('.order-notes');
+            const currentQty = qtyElement ? parseInt(qtyElement.textContent) : 1;
+            
+            // Extrair tamanho do texto (ex: "📏 Tamanho: G" -> "G")
+            let currentSize = '';
+            if (sizeElement) {
+                const sizeText = sizeElement.textContent.trim();
+                const match = sizeText.match(/📏 Tamanho: (.+)/);
+                if (match) {
+                    currentSize = match[1].trim();
+                }
+            }
+            
+            // Extrair observações do texto (ex: "📝 Obs: texto" -> "texto")
+            let currentNotes = '';
+            if (notesElement) {
+                const notesText = notesElement.textContent.trim();
+                const match = notesText.match(/📝 Obs: (.+)/);
+                if (match) {
+                    currentNotes = match[1].trim();
+                }
+            }
+            
+            console.log('📋 Dados atuais:', { qty: currentQty, size: currentSize, notes: currentNotes });
+
+            // Criar modal personalizado com campos de quantidade, tamanho e observações
+            const modalHTML = `
+                <div class="modal-overlay active" id="edit-modal" style="display: flex !important;" onclick="if(event.target === this) closeEditModal()">
+                    <div class="modal-box" onclick="event.stopPropagation()">
+                        <h3 style="margin: 0 0 20px 0; color: var(--text-primary);">✏️ Editar Item</h3>
+                        <div style="margin: 20px 0;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold; color: var(--text-primary);">Quantidade:</label>
+                            <input type="number" id="edit-quantity" value="${currentQty}" min="1" 
+                                style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary);">
+                        </div>
+                        <div style="margin: 20px 0;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold; color: var(--text-primary);">Tamanho:</label>
+                            <input type="text" id="edit-size" value="${currentSize}" 
+                                placeholder="Ex: G, P, 1kg, 500g..."
+                                style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary);">
+                        </div>
+                        <div style="margin: 20px 0;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold; color: var(--text-primary);">Observações:</label>
+                            <textarea id="edit-notes" 
+                                placeholder="Digite observações sobre este item..."
+                                style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary); min-height: 80px; resize: vertical; font-family: inherit;">${currentNotes}</textarea>
+                        </div>
+                        <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 30px;">
+                            <button onclick="closeEditModal()" 
+                                style="padding: 12px 24px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                                Cancelar
+                            </button>
+                            <button onclick="confirmEditItem('${orderId}')" 
+                                style="padding: 12px 24px; background: #ff6b6b; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                                💾 Salvar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.insertAdjacentHTML('beforeend', modalHTML);
+            console.log('✅ Modal de edição criado');
+            
+            // Focar no campo de quantidade após um pequeno delay
+            setTimeout(() => {
+                const qtyInput = document.getElementById('edit-quantity');
+                if (qtyInput) {
+                    qtyInput.focus();
+                    qtyInput.select();
+                }
+            }, 100);
+        }
+        
+        function closeEditModal() {
+            const modal = document.getElementById('edit-modal');
+            if (modal) {
+                console.log('❌ Fechando modal de edição');
+                modal.remove();
+            }
+        }
+        
+        async function confirmEditItem(orderId) {
+            const quantity = parseInt(document.getElementById('edit-quantity').value);
+            const size = document.getElementById('edit-size').value.trim();
+            const notes = document.getElementById('edit-notes').value.trim();
+            
+            console.log('💾 Salvando alterações:', { orderId, quantity, size, notes });
+            
+            if (isNaN(quantity) || quantity <= 0) {
+                alert('⚠️ Quantidade deve ser maior que zero!');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/production/${orderId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        quantity: quantity,
+                        size: size,
+                        notes: notes
+                    })
+                });
+
+                if (response.ok) {
+                    console.log('✅ Item atualizado com sucesso');
+                    closeEditModal();
+                    loadProduction();
+                } else {
+                    console.error('❌ Erro ao atualizar:', response.status);
+                    alert('❌ Erro ao atualizar item');
+                }
+            } catch (error) {
+                console.error('❌ Erro ao atualizar item:', error);
+                alert('❌ Erro ao atualizar item');
+            }
+        }
+        
+        // ====== ADICIONAR ITEM À PRODUÇÃO ======
+        let productsListCache = [];
+        
+        async function showAddProductionModal() {
+            // Carregar lista de produtos se ainda não foi carregada
+            if (productsListCache.length === 0) {
+                try {
+                    const response = await fetch('/api/products-list');
+                    const data = await response.json();
+                    
+                    if (data.success && data.products) {
+                        productsListCache = data.products;
+                        
+                        // Preencher o select
+                        const select = document.getElementById('add-product-select');
+                        select.innerHTML = '<option value="">Selecione um produto...</option>' +
+                            data.products.map(p => 
+                                `<option value="${p.id}" data-size="${p.size || ''}">${p.name}${p.size ? ` (${p.size})` : ''}</option>`
+                            ).join('');
+                    }
+                } catch (error) {
+                    console.error('Erro ao carregar produtos:', error);
+                    alert('❌ Erro ao carregar lista de produtos');
+                    return;
+                }
+            }
+            
+            // Resetar campos
+            document.getElementById('add-product-select').value = '';
+            document.getElementById('add-quantity-input').value = '1';
+            document.getElementById('add-size-input').value = '';
+            
+            // Mostrar modal
+            document.getElementById('add-production-modal').style.display = 'flex';
+        }
+        
+        function closeAddProductionModal() {
+            document.getElementById('add-production-modal').style.display = 'none';
+        }
+        
+        async function confirmAddProduction() {
+            const productSelect = document.getElementById('add-product-select');
+            const productId = parseInt(productSelect.value);
+            const quantity = parseInt(document.getElementById('add-quantity-input').value);
+            const size = document.getElementById('add-size-input').value.trim();
+            
+            // Validações
+            if (!productId) {
+                alert('⚠️ Selecione um produto!');
+                return;
+            }
+            
+            if (isNaN(quantity) || quantity <= 0) {
+                alert('⚠️ Quantidade deve ser maior que zero!');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/production', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        product_id: productId,
+                        quantity: quantity,
+                        size: size,
+                        notes: 'Adicionado via web'
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    closeAddProductionModal();
+                    loadProduction();
+                    alert('✅ Item adicionado à lista de produção!');
+                } else {
+                    alert(`❌ Erro: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Erro ao adicionar item:', error);
+                alert('❌ Erro ao adicionar item');
+            }
+        }
+        
+        // ====== EXCLUIR ITEM DA PRODUÇÃO ======
+        async function deleteProductionItem(itemId) {
+            // Para evitar propagação do onclick do card
+            event.stopPropagation();
+            
+            if (!confirm('❓ Deseja realmente remover este item da lista de produção?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/production/${itemId}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    loadProduction();
+                    alert('✅ Item removido da lista!');
+                } else {
+                    alert(`❌ Erro: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Erro ao excluir item:', error);
+                alert('❌ Erro ao excluir item');
+            }
+        }
+        
+        // ====== COMPLETAR PRODUÇÃO ======
+        async function completeProduction() {
+            // Confirmar ação
+            if (!confirm('✅ Marcar produção como concluída?\n\nTodos os itens da lista serão adicionados ao estoque.')) {
+                return;
+            }
+            
+            try {
+                // Desabilitar botão durante operação
+                const btn = document.querySelector('.btn-complete-production');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = '⏳ Processando...';
+                }
+                
+                const response = await fetch('/api/production/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Sucesso!
+                    alert(`🎉 ${result.message || 'Produção concluída com sucesso!'}`);
+                    
+                    // Recarregar lista de produção (deve estar vazia agora)
+                    loadProduction();
+                    
+                    // Se estiver na aba de Pronta Entrega, recarregar também
+                    if (currentSection === 'ready-stock') {
+                        loadReadyStock();
+                    }
+                    
+                    console.log('✅ Produção concluída:', result);
+                } else {
+                    alert(`❌ Erro: ${result.error || 'Não foi possível completar a produção'}`);
+                }
+                
+                // Reabilitar botão
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '✅ Produção feita';
+                }
+                
+            } catch (error) {
+                console.error('❌ Erro ao completar produção:', error);
+                alert('❌ Erro ao completar produção. Verifique a conexão com o servidor.');
+                
+                // Reabilitar botão
+                const btn = document.querySelector('.btn-complete-production');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '✅ Produção feita';
+                }
+            }
+        }
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🚀 Painel iniciado - DOMContentLoaded');
+            
+            loadTheme();
+            
+            // Carregar dados iniciais e iniciar auto-refresh
+            switchSection('production');
+            
+            // Adicionar suporte a touch para mobile
+            addMobileTouchSupport();
+        });
+
+        // Suporte a eventos touch para melhor resposta no mobile
+        function addMobileTouchSupport() {
+            console.log('📱 Configurando suporte touch para mobile');
+            
+            // Detectar se é mobile e mostrar debug banner
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            if (isMobile) {
+                const debugBanner = document.getElementById('debug-banner');
+                const debugInfo = document.getElementById('debug-info');
+                debugBanner.style.display = 'block';
+                debugInfo.textContent = '📱 Mobile detectado - Modo Debug Ativo';
+                
+                // Função para atualizar debug info
+                window.updateDebug = function(msg) {
+                    debugInfo.textContent = msg;
+                    console.log('🐛 DEBUG:', msg);
+                    setTimeout(() => {
+                        debugInfo.textContent = '📱 Mobile detectado - Aguardando ação...';
+                    }, 3000);
+                };
+            }
+            
+            // Adicionar eventos touch aos botões de menu
+            document.querySelectorAll('.menu-btn').forEach(btn => {
+                btn.addEventListener('touchstart', function(e) {
+                    const btnText = this.textContent.trim();
+                    console.log('👆 Touch no botão:', btnText);
+                    if (window.updateDebug) window.updateDebug(`👆 Touch: ${btnText}`);
+                }, { passive: true });
+            });
+            
+            // Adicionar evento touch ao botão de tema
+            const themeBtn = document.querySelector('.theme-toggle');
+            if (themeBtn) {
+                themeBtn.addEventListener('touchstart', function(e) {
+                    console.log('👆 Touch no botão de tema');
+                    if (window.updateDebug) window.updateDebug('👆 Touch: Trocar Tema');
+                }, { passive: true });
+            }
+            
+            console.log('✅ Suporte touch configurado');
+        }
+    </script>
+</body>
+</html>

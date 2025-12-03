@@ -1,0 +1,113 @@
+{
+  "date": "2025-11-18",
+  "items": [
+    {
+      "produto": "Cheesecake 23cm",
+      "quantidade": 3,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Brownie gotas chocolate 20cm",
+      "quantidade": 3,
+      "tamanho": "20",
+      "obs": ""
+    },
+    {
+      "produto": "Cupuaçu",
+      "quantidade": 1,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Vegana Morango 23cm",
+      "quantidade": 1,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Carrot Cake 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Castanha 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Manga com coco 23cm",
+      "quantidade": 1,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Romeu e Julieta 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Crocante de amendoim 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Toucinho do céu 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Laranja com chocolate 28cm",
+      "quantidade": 2,
+      "tamanho": "28",
+      "obs": ""
+    },
+    {
+      "produto": "Laranja com chocolate 23cm",
+      "quantidade": 3,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Maracujá com mousse de chocolate 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Limão Siciliano 23cm",
+      "quantidade": 3,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Pera e cardamomo 23cm",
+      "quantidade": 2,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Maçã da Bretanha 23cm",
+      "quantidade": 15,
+      "tamanho": "23",
+      "obs": ""
+    },
+    {
+      "produto": "Explosão chocolate 28cm",
+      "quantidade": 2,
+      "tamanho": "28",
+      "obs": ""
+    },
+    {
+      "produto": "Explosão chocolate 23cm",
+      "quantidade": 9,
+      "tamanho": "23",
+      "obs": ""
+    }
+  ]
+}
