@@ -22,7 +22,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 DEBUG_UPDATER = True
 
 # Versão atual do sistema (será atualizada automaticamente)
-CURRENT_VERSION = "1.12.0"
+CURRENT_VERSION = "1.12.1"
 
 # Configurações do GitHub
 GITHUB_OWNER = "W4lterBr"
