@@ -1,8 +1,8 @@
 @echo off
 REM ============================================================
-REM  BUILD PRINCIPAL - CONFEITARIA v1.12.0
+REM  BUILD PRINCIPAL - CONFEITARIA v1.11.33
 REM  Gera o executavel e o instalador completo
-REM  Atualizado: 2025-12-03
+REM  Atualizado: 2025-11-25
 REM ============================================================
 
 setlocal EnableDelayedExpansion
@@ -10,7 +10,7 @@ setlocal EnableDelayedExpansion
 echo.
 echo ============================================
 echo  BUILD - SISTEMA CONFEITARIA
-echo  Versao 1.12.0 - Build %date% %time%
+echo  Versao 1.11.33 - Build %date% %time%
 echo ============================================
 echo.
 

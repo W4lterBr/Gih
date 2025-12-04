@@ -1,35 +1,19 @@
 #define MyAppName      "Confeitaria"
-#define MyAppVersion   "1.12.0"
+#define MyAppVersion   "1.11.32"
 #define MyAppPublisher "DWM Systems Developer"
 #define MyAppExeName   "Confeitaria.exe"
 #define MyAppURL       ""  ; Pode adicionar um site aqui se desejar
 #define MyAppAssoc     "confeitariadb"  ; Extensão para associação de arquivos (opcional)
 #define MyAppDataDir   "{userappdata}\Confeitaria"
 
-; CHANGELOG v1.12.0 (2025-12-03)
+; CHANGELOG v1.11.32 (2025-11-21)
 ; ================================
-; 📊 DASHBOARD COMPLETO
-; ✅ Dashboard com estatísticas em tempo real
-; ✅ Gráficos de vendas dos últimos 6 meses
-; ✅ Gráfico de status de pedidos com barras de progresso
-; ✅ Tabela com top 10 produtos mais vendidos
-; 💰 SISTEMA DE PREÇOS
-; ✅ Preços de produtos implementados no banco
-; ✅ Formatação monetária brasileira (R$ 1.234,56)
-; ✅ Coluna de preços na tabela de produtos
-; 🔐 LOGIN INTELIGENTE
-; ✅ Checkbox "Lembrar credenciais"
-; ✅ Auto-preenchimento de usuário e senha
-; ✅ Credenciais salvas com segurança (Base64)
-; 🏢 PERSONALIZAÇÃO DA EMPRESA
-; ✅ Nome da empresa configurável
-; ✅ Upload de logo customizado
-; ✅ Logo exibido na interface principal
-; 🎨 INTERFACE OTIMIZADA
-; ✅ Dashboard com alinhamento perfeito
-; ✅ Componentes 30% menores para melhor uso do espaço
-; ✅ Tabelas com colunas auto-ajustáveis
-; ✅ Gráficos com fonte monospace para alinhamento perfeito
+; 🎉 SISTEMA DE ATUALIZAÇÃO 100% FUNCIONAL
+; ✅ Fix crítico: URL do GitHub corrigida (& em vez de ?)
+; ✅ Comunicação com API do GitHub validada
+; ✅ Detecção de versão remota funcionando
+; ✅ DeprecationWarning do Flask corrigido
+; ✅ Sistema pronto para produção
 ; 
 ; CHANGELOG v1.11.27 (2025-11-17)
 ; ================================

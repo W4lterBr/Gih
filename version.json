@@ -1,27 +1,15 @@
 {
-  "version": "1.12.1",
-  "release_date": "2025-12-03",
+  "version": "1.11.45",
+  "release_date": "2025-11-25",
   "changelog": [
-    "🔧 CORREÇÕES CRÍTICAS DE BANCO DE DADOS",
-    "✅ Sistema de reparo de banco corrompido",
-    "✅ Validação inteligente de backups",
-    "✅ Consolidação automática de WAL",
-    "✅ Explorador do Windows para selecionar backups",
-    "✅ Logs detalhados de restauração",
-    "📊 DASHBOARD COMPLETO",
-    "✅ Estatísticas em tempo real",
-    "✅ Gráficos de vendas dos últimos 6 meses",
-    "✅ Top 10 produtos mais vendidos",
-    "💰 PREÇOS E FORMATAÇÃO",
-    "✅ Formatação monetária brasileira (R$ 1.234,56)",
-    "🔐 LOGIN COM CREDENCIAIS SALVAS",
-    "✅ Auto-preenchimento no próximo login",
-    "🎨 5 TEMAS DISPONÍVEIS",
-    "✅ Escuro, Claro, Rosa, Roxo, Azul",
-    "🔄 SISTEMA DE ATUALIZAÇÃO REMOTA",
-    "✅ Verificar e instalar atualizações via GitHub"
+    "❌ VERIFICAÇÃO SSH REMOVIDA",
+    "✅ Não testa SSH ao atualizar sistema",
+    "✅ Não mostra mensagens de SSH automaticamente",
+    "✅ SSH só é usado quando necessário",
+    "🎯 Atualizações mais silenciosas",
+    "🔧 Menos interrupções ao usuário"
   ],
   "required_version": "1.11.0",
-  "download_url": "https://github.com/W4lterBr/Gih/archive/refs/heads/main.zip",
+  "download_url": "https://github.com/W4lterBr/Confeitaria-1.1.6/archive/refs/heads/main.zip",
   "min_python_version": "3.10"
 }

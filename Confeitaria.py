@@ -48,13 +48,24 @@ from datetime import datetime, date, timedelta, timezone
 T = TypeVar("T")
 
 # ---------------------------------------------------------------------
-# Configurações da aplicação
+# LICENÇA — Configurações e cache local
 # ---------------------------------------------------------------------
 # Local da aplicação (.py ou .exe)
 if getattr(sys, "frozen", False):  # executável (PyInstaller)
     APP_DIR = os.path.dirname(sys.executable)
 else:                               # script .py
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+LICENSE_RAW_URL = "https://raw.githubusercontent.com/W4lterBr/token/main/license/status.json"
+LICENSE_DIR   = os.path.join(APP_DIR, "_license_cache")
+LICENSE_CACHE = os.path.join(LICENSE_DIR, "status.json")
+LICENSE_ETAG  = os.path.join(LICENSE_DIR, "status.etag")
+CONFIG_FILE   = os.path.join(LICENSE_DIR, "config.json")  # guarda expected_token
+DEBUG_LICENSE = False  # coloque True para logs de diagnóstico
+
+# Modo de desenvolvimento - define tokens válidos conhecidos ou bypass
+DEVELOPMENT_MODE = False  # True para desenvolvimento, False para produção
+VALID_TOKENS = ["TYVC-7WE5-9ETH-HJGS", "EAT8-M8ES-BVMC-FEY2", "4N36-EX3N-2HEZ-H7BJ"]  # Tokens válidos do sistema
 
 from PyQt6.QtCore import Qt, QSize, QTimer, QEasingCurve, QPropertyAnimation, QPoint, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QColor, QFont
@@ -126,12 +137,12 @@ except Exception:
             )""")
             self.conn.commit()
 
-        def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
             cur = self.conn.cursor()
             cur.execute(sql, params)
             return cur.fetchall()
 
-        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
             cur = self.conn.cursor()
             cur.execute(sql, params)
             self.conn.commit()
@@ -231,12 +242,531 @@ class AsyncDatabaseValidator(QThread):
                 self.finished.emit(False, f"Erro ao validar: {str(e)}", self.file_path)
 
 # ---------------------------------------------------------------------
-# Sistema simplificado - sem licenciamento (versão local)
+# SISTEMA DE LICENCIAMENTO
 # ---------------------------------------------------------------------
 
-# -----------------------------
-# Ícones QtAwesome + fallback
-# -----------------------------
+# ---------- Helpers de rede/cache ----------
+def _http_get(url: str, etag: str | None = None, timeout: float = 10.0, cache_bust: bool = False) -> tuple[str, str]:
+    """
+    Faz GET do 'url' e retorna (texto, etag). Se cache_bust=True, adiciona um
+    query param anti-cache e manda headers no-cache (ignora ETag).
+    """
+    final_url = url
+    if cache_bust:
+        # Múltiplos parâmetros anti-cache para máxima efetividade
+        timestamp = int(datetime.now().timestamp() * 1000)  # milissegundos para mais precisão
+        import random
+        random_val = random.randint(10000, 99999)
+        sep = "&" if ("?" in url) else "?"
+        final_url = f"{url}{sep}nocache={timestamp}&bust={random_val}&t={datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    headers = {
+        "User-Agent": "LicenseClient/1.0",
+        "Accept": "application/json",
+    }
+    if cache_bust:
+        # Headers anti-cache mais agressivos
+        headers.update({
+            "Cache-Control": "no-cache, no-store, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+        })
+        etag = None  # força baixar sem If-None-Match
+
+    if etag:
+        headers["If-None-Match"] = etag
+
+    req = urllib.request.Request(final_url, headers=headers)
+    
+    if DEBUG_LICENSE and cache_bust:
+        print(f"[licenca] 🌐 URL final com cache bust: {final_url}")
+        print(f"[licenca] 📋 Headers anti-cache: {dict(headers)}")
+    
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        new_etag = resp.headers.get("ETag", "") or resp.headers.get("Etag", "")
+        return resp.read().decode('utf-8'), new_etag
+
+def _save_cache(txt: str, etag: str | None):
+    os.makedirs(LICENSE_DIR, exist_ok=True)
+    with open(LICENSE_CACHE, "w", encoding="utf-8") as f:
+        f.write(txt)
+    with open(LICENSE_ETAG, "w", encoding="utf-8") as f:
+        f.write(etag or "")
+
+def _load_cache() -> tuple[dict | None, str | None]:
+    if not os.path.exists(LICENSE_CACHE):
+        return None, None
+    try:
+        with open(LICENSE_CACHE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None, None
+    etag = None
+    if os.path.exists(LICENSE_ETAG):
+        try:
+            with open(LICENSE_ETAG, "r", encoding="utf-8") as f:
+                etag = f.read().strip() or None
+        except Exception:
+            etag = None
+    return data, etag
+
+def _parse_iso_utc(s: str) -> datetime:
+    return datetime.fromisoformat(s).astimezone(timezone.utc)
+
+def _status_text(code: int) -> str:
+    return {1: "Autorizado", 2: "Pendente", 3: "Inadimplente", 4: "Sem conexão"}.get(int(code or 0), "Desconhecido")
+
+# ---------- Seleção do cliente pelo token ----------
+def _select_client_record(payload: dict, expected_token: str) -> dict | None:
+    """
+    Suporta:
+      - novo: {"clients":[ {...}, {...} ], "updated_at": "..."}
+      - antigo: objeto único
+    Retorna o registro cujo license_token == expected_token (case-insensitive).
+    """
+    exp = (expected_token or "").strip().upper()
+    if not payload or not exp:
+        return None
+
+    if "clients" in payload and isinstance(payload["clients"], list):
+        for c in payload["clients"]:
+            tok = (c.get("license_token") or "").strip().upper()
+            if tok == exp:
+                return c
+        if DEBUG_LICENSE:
+            print(f"[licenca] Token '{expected_token}' não encontrado entre {len(payload['clients'])} clientes")
+            for i, c in enumerate(payload["clients"][:3]):  # mostra até 3 primeiros
+                print(f"  cliente[{i}]: token='{c.get('license_token', 'N/A')}'")
+        return None
+
+    tok = (payload.get("license_token") or "").strip().upper()
+    return payload if tok == exp else None
+
+# ---------- Avaliação do status ----------
+def _evaluate_record(rec: dict, offline: bool) -> tuple[int, str]:
+    now = datetime.now(timezone.utc)
+    status = int(rec.get("status", 1))
+    valid_until = _parse_iso_utc(rec.get("valid_until")) if rec.get("valid_until") else None
+    note = rec.get("note", "").strip()  # Adicionar campo note
+    
+    # Debug detalhado
+    if DEBUG_LICENSE:
+        print(f"[licenca] 🔍 _evaluate_record DEBUG:")
+        print(f"  - Agora (UTC): {now}")
+        print(f"  - Status do servidor: {status}")
+        print(f"  - valid_until string: {rec.get('valid_until')}")
+        print(f"  - valid_until parsed: {valid_until}")
+        print(f"  - Note: {note}")
+        print(f"  - Offline mode: {offline}")
+        if valid_until:
+            time_diff = valid_until - now
+            print(f"  - Diferença de tempo: {time_diff}")
+            print(f"  - Expirou? {now > valid_until}")
+    
+    # Calcular dias restantes e diferença total
+    days_remaining = None
+    time_remaining = None
+    if valid_until:
+        time_remaining = valid_until - now
+        days_remaining = time_remaining.days
+
+    if DEBUG_LICENSE:
+        if time_remaining:
+            print(f"  - Tempo total restante: {time_remaining}")
+            print(f"  - Dias restantes (inteiros): {days_remaining}")
+            print(f"  - Segundos totais restantes: {time_remaining.total_seconds()}")
+
+    if status in (2, 3):
+        if DEBUG_LICENSE:
+            print(f"[licenca] ⚠️ Retornando status do servidor: {status}")
+        
+        # Criar mensagem com note se disponível
+        base_msg = f"Status {status} — {_status_text(status)}."
+        if note:
+            description = f"\nDescrição: {note}."
+            return status, base_msg + description
+        else:
+            return status, base_msg
+
+    if offline:
+        if valid_until and now > valid_until:
+            return 4, f"Status 4 — Sem conexão e cache expirado em {valid_until.strftime('%d/%m/%Y %H:%M')}."
+        remaining_msg = f" (válido até {valid_until.strftime('%d/%m/%Y %H:%M')})" if valid_until else ""
+        return 1, f"Status 1 — Autorizado (offline{remaining_msg})."
+
+    if status == 4:
+        if valid_until and now > valid_until:
+            return 4, f"Status 4 — Sem conexão e expirado."
+        return 1, f"Status 1 — Autorizado (sem conexão, mas dentro do prazo)."
+
+    # Verificação principal de expiração (usar tempo total, não apenas dias)
+    if valid_until and now > valid_until:
+        if DEBUG_LICENSE:
+            print(f"[licenca] ❌ Licença expirada: {now} > {valid_until}")
+        base_msg = f"Status 3 — Licença expirada em {valid_until.strftime('%d/%m/%Y %H:%M')}."
+        if note:
+            description = f"\nDescrição: {note}."
+            return 3, base_msg + description
+        else:
+            return 3, base_msg
+    
+    # Avisos de vencimento próximo (usar tempo total ao invés de apenas dias)
+    if valid_until and time_remaining is not None:
+        total_hours = time_remaining.total_seconds() / 3600
+        
+        # Se já expirou (tempo negativo)
+        if total_hours <= 0:
+            if DEBUG_LICENSE:
+                print(f"[licenca] ❌ Licença expirada por tempo total: {total_hours} horas")
+            base_msg = f"Status 3 — Licença expirada em {valid_until.strftime('%d/%m/%Y %H:%M')}."
+            if note:
+                description = f"\nDescrição: {note}."
+                return 3, base_msg + description
+            else:
+                return 3, base_msg
+        # Se expira em menos de 24 horas
+        elif total_hours < 24:
+            return 1, f"Status 1 — Autorizado (⚠️ EXPIRA EM {int(total_hours)}h: {valid_until.strftime('%d/%m/%Y %H:%M')})."
+        # Se expira em 1 dia (24-48h)
+        elif days_remaining == 1:
+            return 1, f"Status 1 — Autorizado (⚠️ EXPIRA AMANHÃ: {valid_until.strftime('%d/%m/%Y %H:%M')})."
+        elif days_remaining <= 3:
+            return 1, f"Status 1 — Autorizado (⚠️ Expira em {days_remaining} dias: {valid_until.strftime('%d/%m/%Y %H:%M')})."
+        elif days_remaining <= 7:
+            return 1, f"Status 1 — Autorizado (Expira em {days_remaining} dias: {valid_until.strftime('%d/%m/%Y')})."
+        else:
+            return 1, f"Status 1 — Autorizado (válido até {valid_until.strftime('%d/%m/%Y')})."
+    
+    return 1, "Status 1 — Autorizado."
+
+# ---------- Token esperado: carregar/salvar ----------
+def _load_expected_token_from_env_or_disk() -> str | None:
+    env_token = os.getenv("LICENSE_TOKEN")
+    if env_token:
+        return env_token.strip()
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("expected_token", "").strip() or None
+        except Exception:
+            return None
+    return None
+
+def _save_expected_token_to_disk(token: str):
+    os.makedirs(LICENSE_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump({"expected_token": token.strip()}, f, ensure_ascii=False, indent=2)
+
+def _purge_license_cache_if_online():
+    """
+    Se houver internet, limpa os arquivos de cache (status.json / status.etag)
+    e faz um GET 'fresh' com cache-buster para baixar a versão mais recente.
+    Se não houver internet, não remove nada.
+    """
+    try:
+        # 1) testa acesso online (fresh + cache-buster)
+        _txt, _etag = _http_get(LICENSE_RAW_URL, etag=None, timeout=10, cache_bust=True)
+
+        # 2) havendo internet, remove os caches locais
+        try:
+            if os.path.exists(LICENSE_CACHE):
+                os.remove(LICENSE_CACHE)
+            if os.path.exists(LICENSE_ETAG):
+                os.remove(LICENSE_ETAG)
+        except Exception:
+            pass  # não é crítico
+
+        # 3) salva imediatamente o conteúdo fresco como novo cache
+        _save_cache(_txt, _etag)
+    except Exception:
+        # sem internet ou falha — não mexe no cache
+        pass
+
+# ---------- Download do status (fresh/etag/cache) ----------
+def _download_status_fresh_or_cache() -> dict | None:
+    cached, etag = _load_cache()
+
+    # 1) fresh
+    try:
+        txt, new_etag = _http_get(LICENSE_RAW_URL, etag=None, cache_bust=True)
+        data = json.loads(txt)
+        _save_cache(txt, new_etag)
+        if DEBUG_LICENSE and "clients" in data:
+            print(f"[licenca] Baixado status.json fresh: {len(data['clients'])} clientes")
+        return data
+    except Exception as e:
+        if DEBUG_LICENSE: 
+            print(f"[licenca] Falha no fresh: {e}")
+
+    # 2) condicional por ETag
+    try:
+        txt, new_etag = _http_get(LICENSE_RAW_URL, etag=etag, cache_bust=False)
+        data = json.loads(txt)
+        _save_cache(txt, new_etag)
+        return data
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and cached is not None:
+            return cached  # 304 Not Modified
+    except Exception as e:
+        if DEBUG_LICENSE: 
+            print(f"[licenca] Falha no condicional: {e}")
+
+    # 3) cache local
+    return cached
+
+# ---------- 1º boot: pedir token e validar ----------
+def _prompt_token_once_and_validate(parent=None) -> str:
+    """
+    Pede o token (apenas se ainda não existir salvo/ambiente) e valida contra o status.json.
+    Se digitar errado, pede novamente. Cancelar = sair.
+    PRESSUPÕE que os dados do status.json já foram baixados e estão no cache.
+    """
+    from PyQt6.QtWidgets import QInputDialog, QMessageBox
+    
+    existing = _load_expected_token_from_env_or_disk()
+    if existing:
+        # Verificar se o token existente ainda é válido nos dados atualizados
+        cached_data, _ = _load_cache()
+        if cached_data:
+            rec = _select_client_record(cached_data, existing)
+            if rec:
+                # Token existe no sistema atualizado, usar ele
+                if DEBUG_LICENSE:
+                    print(f"[licenca] Token existente '{existing}' confirmado no sistema atualizado")
+                return existing
+            else:
+                # Token não existe mais no sistema, solicitar novo
+                if DEBUG_LICENSE:
+                    print(f"[licenca] Token existente '{existing}' não encontrado no sistema atualizado. Solicitando novo token.")
+        else:
+            # Se não tem cache, usar o token existente (será validado depois)
+            return existing
+
+    # Carregar dados atualizados do cache (apenas para validação interna)
+    cached_data, _ = _load_cache()
+    available_tokens = []
+    if cached_data and "clients" in cached_data:
+        available_tokens = [client.get("license_token", "") for client in cached_data["clients"] if client.get("license_token")]
+
+    # Mensagem profissional para o usuário
+    if DEVELOPMENT_MODE:
+        # Em modo desenvolvimento, ainda mostrar tokens para facilitar testes
+        msg = f"MODO DESENVOLVIMENTO\n\n"
+        if available_tokens:
+            msg += "Tokens válidos encontrados no sistema:\n"
+            for i, token in enumerate(available_tokens[:5], 1):  # Mostrar apenas 5
+                client_info = next((c for c in cached_data["clients"] if c.get("license_token") == token), {})
+                client_name = client_info.get("cliente", "Cliente Desconhecido")
+                msg += f"{i}. {token} ({client_name})\n"
+        elif VALID_TOKENS:
+            msg += "Tokens de desenvolvimento:\n"
+            for i, token in enumerate(VALID_TOKENS, 1):
+                msg += f"{i}. {token}\n"
+        msg += f"\nDigite o license_token do cliente:"
+    else:
+        # Mensagem profissional para usuário final - sem expor tokens
+        msg = ("Bem-vindo ao Sistema de Confeitaria!\n\n"
+               "Para utilizar o sistema, é necessário inserir sua chave de licença.\n"
+               "Digite sua chave de licença no formato: XXXX-XXXX-XXXX-XXXX")
+
+    while True:
+        text, ok = QInputDialog.getText(
+            parent,
+            "Sistema de Confeitaria - Licença",
+            msg
+        )
+        if not ok:
+            print("[licenca] Usuário cancelou entrada do token. Saindo...")
+            os._exit(1)
+
+        token = (text or "").strip()
+        if not token:
+            QMessageBox.warning(parent, "Sistema de Confeitaria", 
+                              "Por favor, digite uma chave de licença válida.")
+            continue
+
+        # Em modo de desenvolvimento, aceitar tokens válidos conhecidos
+        if DEVELOPMENT_MODE:
+            # Primeiro verificar se está no cache atualizado
+            if token.upper() in [t.upper() for t in available_tokens]:
+                print(f"[licenca] MODO DEV: Token válido encontrado no sistema atualizado: {token}")
+                _save_expected_token_to_disk(token)
+                return token
+            # Caso contrário, verificar VALID_TOKENS
+            elif token.upper() in [t.upper() for t in VALID_TOKENS]:
+                print(f"[licenca] MODO DEV: Aceitando token de desenvolvimento: {token}")
+                _save_expected_token_to_disk(token)
+                return token
+
+        # Primeiro verificar contra dados já baixados no cache
+        if cached_data:
+            rec = _select_client_record(cached_data, token)
+            if rec:
+                _save_expected_token_to_disk(token)
+                return token
+        
+        # Se não tem dados no cache ou token não encontrado, tentar baixar novamente
+        data = _download_status_fresh_or_cache()
+        if not data:
+            if DEVELOPMENT_MODE:
+                # Em modo dev, se não conseguir baixar, perguntar se quer continuar com token local
+                reply = QMessageBox.question(parent, "Licença", 
+                    f"Erro ao baixar informações de licença.\n\nMODO DESENVOLVIMENTO: Continuar com token '{token}' sem validação online?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply == QMessageBox.StandardButton.Yes:
+                    _save_expected_token_to_disk(token)
+                    return token
+            QMessageBox.critical(parent, "Sistema de Confeitaria", 
+                               "Não foi possível conectar ao servidor de licenças.\n"
+                               "Verifique sua conexão com a internet e tente novamente.")
+            if not DEVELOPMENT_MODE:
+                os._exit(1)
+            continue
+
+        rec = _select_client_record(data, token)
+        if rec:
+            _save_expected_token_to_disk(token)
+            return token
+
+        # Mostrar tokens disponíveis se falhar
+        if DEBUG_LICENSE and DEVELOPMENT_MODE:
+            available_msg = "Token não encontrado.\n\nTokens disponíveis no sistema atualizado:\n"
+            if "clients" in data:
+                for i, client in enumerate(data["clients"][:5], 1):  # mostrar até 5
+                    token_info = client.get('license_token', 'N/A')
+                    client_name = client.get('cliente', 'N/A')
+                    valid_until = client.get('valid_until', 'N/A')
+                    available_msg += f"{i}. {token_info} ({client_name}) - {valid_until}\n"
+            QMessageBox.warning(parent, "Licença", available_msg + "\nTente novamente.")
+        else:
+            QMessageBox.warning(parent, "Sistema de Confeitaria", 
+                              "Chave de licença não encontrada.\n\n"
+                              "Verifique se a chave foi digitada corretamente e tente novamente.\n"
+                              "Caso persista o problema, entre em contato com o suporte.")
+
+# ---------- Validação no boot e revalidação ----------
+def _check_license_or_exit(parent=None, expected_token: str = "", show_dialog=True, force_online_at_start=True) -> dict:
+    """
+    Valida no start. Sai do processo se bloqueado.
+    Retorna {"status":int, "message":str, "token":str, "origin":"remote/cache"}
+    """
+    from PyQt6.QtWidgets import QMessageBox
+    
+    token = (expected_token or "").strip()
+    if not token:
+        if show_dialog:
+            QMessageBox.critical(parent, "Licença", "Token de licença não configurado.")
+        os._exit(1)
+
+    if DEBUG_LICENSE:
+        print(f"[licenca] URL={LICENSE_RAW_URL} token_esperado={token}")
+
+    cached, etag = _load_cache()
+    tried_remote = False
+    data = None
+    offline = False
+    origin = "cache"
+
+    if force_online_at_start or cached is None:
+        try:
+            txt, new_etag = _http_get(LICENSE_RAW_URL, etag=None, cache_bust=True)
+            data = json.loads(txt)
+            _save_cache(txt, new_etag)
+            tried_remote = True
+            origin = "remote"
+        except Exception as e:
+            offline = True
+            if DEBUG_LICENSE:
+                print(f"[licenca] Falha ao tentar online: {e}")
+
+    if data is None:
+        try:
+            txt, new_etag = _http_get(LICENSE_RAW_URL, etag=etag, cache_bust=False)
+            data = json.loads(txt)
+            _save_cache(txt, new_etag)
+            origin = "remote"
+        except urllib.error.HTTPError as e:
+            if e.code == 304 and cached is not None:
+                data = cached
+                origin = "cache"  # 304 Not Modified
+        except Exception:
+            offline = True
+
+    if data is None and cached is not None:
+        data = cached
+        origin = "cache"
+
+    if data is None:
+        if show_dialog:
+            QMessageBox.critical(parent, "Licença", "Não foi possível validar a licença. Verifique sua conexão.")
+        os._exit(1)
+
+    rec = _select_client_record(data, token)
+    if not rec:
+        if show_dialog:
+            QMessageBox.critical(parent, "Licença", f"Token '{token}' não encontrado ou inválido.")
+        try:
+            _purge_license_cache_if_online()  # limpa cache para forçar revalidação
+        except Exception:
+            pass
+        os._exit(1)
+
+    st, msg = _evaluate_record(rec, offline=offline)
+    
+    if DEBUG_LICENSE:
+        print(f"[licenca] 🎯 Resultado final da avaliação: st={st}, msg='{msg}'")
+        print(f"[licenca] 🎯 Vai bloquear? {st in (2, 3)}")
+    
+    if st in (2, 3):
+        if DEBUG_LICENSE:
+            print(f"[licenca] ❌ BLOQUEANDO: Status {st} detectado")
+        if show_dialog:
+            QMessageBox.critical(parent, "Licença", f"Acesso negado: {msg}")
+        os._exit(1)
+
+    if DEBUG_LICENSE:
+        print(f"[licenca] ✅ Validação OK: origem={origin} status={st} token={token}")
+
+    return {"status": st, "message": msg, "token": token, "origin": origin}
+
+def _recheck_and_maybe_close(window, expected_token: str, interval_ms: int = 60_000):
+    """Agenda revalidação periódica. Fecha se bloquear."""
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QMessageBox
+    
+    timer = QTimer(window)
+    timer.setInterval(interval_ms)
+
+    def _tick():
+        try:
+            info = _check_license_or_exit(parent=window, expected_token=expected_token,
+                                          show_dialog=False, force_online_at_start=False)
+            
+            # Mostrar avisos de vencimento próximo
+            if info["status"] == 1 and "⚠️" in info["message"]:
+                # Mostrar aviso apenas a cada 10 minutos para não incomodar muito
+                if not hasattr(window, '_last_warning_time') or \
+                   (datetime.now().timestamp() - window._last_warning_time) > 600:  # 10 min
+                    QMessageBox.warning(window, "Aviso de Licença", 
+                                      f"Atenção: {info['message']}\n\nRenove sua licença para evitar interrupções.")
+                    window._last_warning_time = datetime.now().timestamp()
+            
+            if info["status"] in (2, 3):
+                QMessageBox.critical(window, "Licença Expirada", 
+                                   f"Sua licença expirou: {info['message']}\n\nA aplicação será fechada.")
+                window.close()
+                
+        except Exception as e:
+            if DEBUG_LICENSE:
+                print(f"[licenca] Erro na revalidação: {e}")
+
+    timer.timeout.connect(_tick)
+    timer.start()
+    window._license_timer = timer  # mantém referência
+
+# Ícones opcionais via qtawesome
 try:
     import qtawesome as qta  # type: ignore
     
@@ -292,7 +822,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
     
     try:
         # Verifica se é hash bcrypt (começa com $2a$, $2b$, $2y$)
-        is_bcrypt = stored_hash.startswith('$2')
+        is_bcrypt = isinstance(stored_hash, str) and stored_hash.startswith('$2')
         
         if bcrypt and is_bcrypt:
             # Verifica com bcrypt
@@ -485,16 +1015,9 @@ class ExtendedDatabase(Database):
                 description TEXT,
                 size TEXT,
                 stock INTEGER NOT NULL DEFAULT 0,
-                min_stock INTEGER NOT NULL DEFAULT 0,
-                price REAL NOT NULL DEFAULT 0.0
+                min_stock INTEGER NOT NULL DEFAULT 0
             )
         """)
-        
-        # Adicionar coluna price se não existir (migração)
-        try:
-            cur.execute("ALTER TABLE products ADD COLUMN price REAL NOT NULL DEFAULT 0.0")
-        except Exception:
-            pass  # Coluna já existe
 
         # Pedidos
         cur.execute("""
@@ -695,23 +1218,6 @@ class ExtendedDatabase(Database):
             )
         """)
         
-        # Tabela de configuração da empresa
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS company (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                name TEXT NOT NULL DEFAULT 'Minha Empresa',
-                logo_path TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        
-        # Insere registro padrão se não existir
-        existing_company = cur.execute("SELECT 1 FROM company WHERE id=1").fetchone()
-        if not existing_company:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cur.execute("INSERT INTO company(id, name, logo_path, created_at, updated_at) VALUES (1, 'Confeitaria', NULL, ?, ?)", (now, now))
-        
         self.conn.commit()
         
         # Adiciona etiquetas padrão se não existirem
@@ -873,23 +1379,6 @@ def format_datetime(dt_str: str) -> str:
         return d.strftime("%d/%m/%Y %H:%M") if " " in s else d.strftime("%d/%m/%Y")
     except Exception:
         return s
-
-def format_price_br(value: float) -> str:
-    """Formata valor monetário no padrão brasileiro.
-    
-    Exemplos:
-        1234.56 -> "R$ 1.234,56"
-        1000000.00 -> "R$ 1.000.000,00"
-        0.5 -> "R$ 0,50"
-    """
-    try:
-        # Converte para string formatada com 2 casas decimais
-        formatted = f"{value:,.2f}"
-        # Substitui vírgula por ponto temporário e ponto por vírgula
-        formatted = formatted.replace(",", "TEMP").replace(".", ",").replace("TEMP", ".")
-        return f"R$ {formatted}"
-    except (ValueError, TypeError):
-        return "R$ 0,00"
 
 # -----------------------------
 # Dialogs (CRUD)
@@ -1135,17 +1624,9 @@ class ProductDialog(QDialog):
         self.stock: QSpinBox = QSpinBox(); self.stock.setMaximum(1_000_000)
         self.min_stock: QSpinBox = QSpinBox(); self.min_stock.setMaximum(100_000)
         
-        # Campo de preço
-        self.price: QDoubleSpinBox = QDoubleSpinBox()
-        self.price.setMaximum(999999.99)
-        self.price.setDecimals(2)
-        self.price.setPrefix("R$ ")
-        self.price.setSingleStep(1.0)
-        
         layout.addRow("Nome:", self.name)
         layout.addRow("Descrição:", self.description)
         layout.addRow("Tamanhos (cm):", self.sizes_container)
-        layout.addRow("Preço:", self.price)
         layout.addRow("Estoque:", self.stock)
         layout.addRow("Estoque mín.:", self.min_stock)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -1164,12 +1645,6 @@ class ProductDialog(QDialog):
                     self.size_inputs.remove(widget)
                 for size in sizes:
                     self._add_size_field(size)
-            # Carregar preço
-            try:
-                price_value = float(data["price"]) if data["price"] is not None else 0.0
-            except (KeyError, TypeError, ValueError):
-                price_value = 0.0
-            self.price.setValue(price_value)
             self.stock.setValue(int(data["stock"]))
             self.min_stock.setValue(int(data["min_stock"]))
     
@@ -1209,7 +1684,7 @@ class ProductDialog(QDialog):
             self.size_inputs.remove(field)
         container.deleteLater()
 
-    def get_values(self) -> tuple[str, Optional[str], Optional[str], int, int, float]:
+    def get_values(self) -> tuple[str, Optional[str], Optional[str], int, int]:
         # Coleta todos os tamanhos não vazios e junta com vírgula
         sizes = [field.text().strip() for field in self.size_inputs if field.text().strip()]
         size_str = ", ".join(sizes) if sizes else None
@@ -1220,7 +1695,6 @@ class ProductDialog(QDialog):
             size_str,
             int(self.stock.value()),
             int(self.min_stock.value()),
-            float(self.price.value()),
         )
 
 class MultiProductOrderDialog(QDialog):
@@ -1233,7 +1707,7 @@ class MultiProductOrderDialog(QDialog):
         from core.config import load_config
         
         self.db = db
-        self.products_list: list[dict[str, Any]] = []  # Lista de produtos adicionados
+        self.products_list: list[dict] = []  # Lista de produtos adicionados
         
         self.setWindowTitle("Novo Pedido - Múltiplos Produtos")
         self.resize(800, 600)
@@ -1619,7 +2093,7 @@ class MultiProductOrderDialog(QDialog):
         # Aceita e salva
         self.accept()
     
-    def get_order_data(self) -> dict[str, Any]:
+    def get_order_data(self) -> dict:
         """Retorna os dados do pedido completo"""
         return {
             "customer_id": self.customer.currentData(),
@@ -3019,8 +3493,8 @@ class ProductsPage(BasePage):
         search_box.addWidget(btn_clear)
         bl.addLayout(search_box)
         # adiciona coluna extra para o botão de visualização de logs
-        self.table: QTableWidget = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Nome", "Descrição", "Tamanho", "Preço", "Estoque", "Logs"])
+        self.table: QTableWidget = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Nome", "Descrição", "Tamanho", "Estoque", "Logs"])
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         if header:
@@ -3029,7 +3503,7 @@ class ProductsPage(BasePage):
             header.setStretchLastSection(False)
             # fixa largura da coluna Logs para manter alinhamento consistente
             try:
-                logs_col = 5
+                logs_col = 4
                 header.setSectionResizeMode(logs_col, QHeaderView.ResizeMode.Fixed)
                 self.table.setColumnWidth(logs_col, 96)
                 # Centraliza o título
@@ -3088,18 +3562,10 @@ class ProductsPage(BasePage):
             self.table.setItem(row, 0, QTableWidgetItem(r["name"]))
             self.table.setItem(row, 1, QTableWidgetItem(r["description"] or ""))
             self.table.setItem(row, 2, QTableWidgetItem(format_size(r["size"])))
-            # Preço formatado no padrão brasileiro
-            try:
-                price_value = float(r["price"]) if r["price"] is not None else 0.0
-            except (KeyError, TypeError, ValueError):
-                price_value = 0.0
-            price_item = QTableWidgetItem(format_price_br(price_value))
-            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table.setItem(row, 3, price_item)
-            self.table.setItem(row, 4, QTableWidgetItem(str(r["stock"])))
+            self.table.setItem(row, 3, QTableWidgetItem(str(r["stock"])))
             self.table.setVerticalHeaderItem(row, QTableWidgetItem(str(r["id"])))
             
-            # botão de logs (ícone) com container centralizado - coluna 5
+            # botão de logs (ícone) com container centralizado - coluna 4
             btn = QPushButton(); btn.setObjectName("IconButton")
             btn.setToolTip("Ver logs deste produto")
             btn.setFlat(True)
@@ -3117,13 +3583,13 @@ class ProductsPage(BasePage):
             layout.addWidget(btn)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.setContentsMargins(0, 0, 0, 0)
-            self.table.setCellWidget(row, 5, container)
+            self.table.setCellWidget(row, 4, container)
             # Força altura mínima de 48px para garantir que ícones não sejam cortados
             self.table.setRowHeight(row, 48)
         self.table.resizeColumnsToContents()
         # Reaplica largura fixa da coluna Logs após autoajuste
         try:
-            self.table.setColumnWidth(5, 96)
+            self.table.setColumnWidth(4, 96)
         except Exception:
             pass
 
@@ -3142,7 +3608,7 @@ class ProductsPage(BasePage):
         d = ProductDialog(self)
         if d.exec() == QDialog.DialogCode.Accepted:
             try:
-                name, desc, size, stock, min_stock, price = d.get_values()
+                name, desc, size, stock, min_stock = d.get_values()
                 if not name:
                     raise ValueError("Nome é obrigatório.")
                 
@@ -3155,8 +3621,8 @@ class ProductsPage(BasePage):
                     for sz in sizes:
                         product_name = f"{name} {sz}cm"
                         cur = self.db.execute(
-                            "INSERT INTO products(name, description, size, stock, min_stock, price) VALUES (?,?,?,?,?,?)",
-                            (product_name, desc, sz, stock, min_stock, price)
+                            "INSERT INTO products(name, description, size, stock, min_stock) VALUES (?,?,?,?,?)",
+                            (product_name, desc, sz, stock, min_stock)
                         )
                         pid_new = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
                         if pid_new and stock and int(stock) > 0:
@@ -3165,7 +3631,7 @@ class ProductsPage(BasePage):
                                 (pid_new, 'entrada', int(stock), 'Cadastro inicial', None, datetime.now().strftime("%Y-%m-%d %H:%M"))
                             )
                         try:
-                            self.db.audit_log("product", pid_new, "create", details=f"name={product_name},stock={stock},price={price}")
+                            self.db.audit_log("product", pid_new, "create", details=f"name={product_name},stock={stock}")
                         except Exception:
                             pass
                         created_count += 1
@@ -3177,8 +3643,8 @@ class ProductsPage(BasePage):
                 else:
                     # Criar apenas um produto (comportamento normal)
                     cur = self.db.execute(
-                        "INSERT INTO products(name, description, size, stock, min_stock, price) VALUES (?,?,?,?,?,?)",
-                        (name, desc, size, stock, min_stock, price)
+                        "INSERT INTO products(name, description, size, stock, min_stock) VALUES (?,?,?,?,?)",
+                        (name, desc, size, stock, min_stock)
                     )
                     pid_new = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
                     if pid_new and stock and int(stock) > 0:
@@ -3207,7 +3673,7 @@ class ProductsPage(BasePage):
         d = ProductDialog(self, row[0])
         if d.exec() == QDialog.DialogCode.Accepted:
             try:
-                name, desc, size, stock, min_stock, price = d.get_values()
+                name, desc, size, stock, min_stock = d.get_values()
                 if not name:
                     raise ValueError("Nome é obrigatório.")
                 
@@ -3219,8 +3685,8 @@ class ProductsPage(BasePage):
                     first_size = sizes[0]
                     product_name = f"{name} {first_size}cm"
                     self.db.execute(
-                        "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=? WHERE id=?",
-                        (product_name, desc, first_size, stock, min_stock, price, pid)
+                        "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=? WHERE id=?",
+                        (product_name, desc, first_size, stock, min_stock, pid)
                     )
                     
                     # Cria novos produtos para os tamanhos restantes
@@ -3228,8 +3694,8 @@ class ProductsPage(BasePage):
                     for sz in sizes[1:]:
                         new_product_name = f"{name} {sz}cm"
                         cur = self.db.execute(
-                            "INSERT INTO products(name, description, size, stock, min_stock, price) VALUES (?,?,?,?,?,?)",
-                            (new_product_name, desc, sz, stock, min_stock, price)
+                            "INSERT INTO products(name, description, size, stock, min_stock) VALUES (?,?,?,?,?)",
+                            (new_product_name, desc, sz, stock, min_stock)
                         )
                         new_pid = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
                         if new_pid and stock and int(stock) > 0:
@@ -3238,7 +3704,7 @@ class ProductsPage(BasePage):
                                 (new_pid, 'entrada', int(stock), 'Cadastro inicial', None, datetime.now().strftime("%Y-%m-%d %H:%M"))
                             )
                         try:
-                            self.db.audit_log("product", new_pid, "create", details=f"name={new_product_name},stock={stock},price={price}")
+                            self.db.audit_log("product", new_pid, "create", details=f"name={new_product_name},stock={stock}")
                         except Exception:
                             pass
                         created_count += 1
@@ -3250,8 +3716,8 @@ class ProductsPage(BasePage):
                 else:
                     # Comportamento normal - apenas atualiza
                     self.db.execute(
-                        "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=? WHERE id=?",
-                        (name, desc, size, stock, min_stock, price, pid)
+                        "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=? WHERE id=?",
+                        (name, desc, size, stock, min_stock, pid)
                     )
                     self.refresh()
                     self._warn_low_stock()
@@ -4623,30 +5089,6 @@ class DatabaseDialog(QDialog):
             }}
         """)
         backup_layout.addWidget(self.btn_restore_backup)
-        
-        # Botão para reparar banco corrompido
-        self.btn_repair_db = QPushButton("🔧 Reparar Banco Corrompido")
-        self.btn_repair_db.setMinimumHeight(40)
-        btn_repair_bg = "#dc2626" if not is_dark else "#b91c1c"
-        btn_repair_hover = "#b91c1c" if not is_dark else "#991b1b"
-        self.btn_repair_db.setStyleSheet(f"""
-            QPushButton {{
-                background: {btn_repair_bg};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 10px 18px;
-                font-size: 14px;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background: {btn_repair_hover};
-            }}
-            QPushButton:pressed {{
-                background: #991b1b;
-            }}
-        """)
-        backup_layout.addWidget(self.btn_repair_db)
         content_layout.addWidget(backup_group)
         
         # Aviso
@@ -4690,7 +5132,6 @@ class DatabaseDialog(QDialog):
         cast(Any, self.btn_do_backup.clicked).connect(lambda: self.backup_cb() if self.backup_cb else None)
         cast(Any, self.btn_cloud_backup.clicked).connect(self.do_cloud_backup_now)
         cast(Any, self.btn_restore_backup.clicked).connect(self.restore_backup)
-        cast(Any, self.btn_repair_db.clicked).connect(self.repair_database)
         
         # Atualizar labels
         self.update_db_path_label()
@@ -5702,22 +6143,22 @@ End If
                 backup_zip = self._select_cloud_backup()
                 if not backup_zip:
                     return
-            else:  # Local - Usa explorador do Windows
+            else:  # Local
+                # Seleciona o arquivo ZIP de backup (abre no diretório de backups)
                 # Garante que o diretório de backups existe
                 os.makedirs(BACKUP_DIR, exist_ok=True)
-                
-                # Usa QFileDialog nativo do Windows para melhor experiência
-                from PyQt6.QtWidgets import QFileDialog
-                
-                backup_zip, _ = QFileDialog.getOpenFileName(
-                    self,
-                    "Selecionar Backup ZIP",
-                    BACKUP_DIR,  # Abre no diretório de backups
-                    "Arquivos ZIP (*.zip);;Todos os Arquivos (*.*)"
+            
+                dlg = CustomFileDialog(
+                    self, 
+                    "Selecionar Backup ZIP", 
+                    filter="Arquivos ZIP (*.zip)",
+                    directory=BACKUP_DIR  # Abre automaticamente no diretório de backups
                 )
                 
-                if not backup_zip:
+                if not dlg.exec():
                     return
+                
+                backup_zip = dlg.get_selected_file()
             
             if not backup_zip or not os.path.isfile(backup_zip):
                 show_message(self, "Erro", "Nenhum arquivo selecionado", ("OK",))
@@ -5770,23 +6211,15 @@ End If
                     print(f"[Restore] 📦 Extraindo backup para verificação...")
                     
                     with zipfile.ZipFile(backup_zip, 'r') as z:
-                        # Lista arquivos no ZIP
-                        zip_contents = z.namelist()
-                        print(f"[Restore] 📋 Arquivos no ZIP: {zip_contents}")
                         z.extractall(temp_dir)
                     
-                    # Lista arquivos extraídos
-                    extracted_files = os.listdir(temp_dir)
-                    print(f"[Restore] 📁 Arquivos extraídos: {extracted_files}")
-                    
-                    # Verifica se tem arquivo .db (ignora -wal e -shm)
-                    db_files = [f for f in extracted_files if f.endswith('.db') and not (f.endswith('-wal') or f.endswith('-shm'))]
+                    # Verifica se tem arquivo .db
+                    db_files = [f for f in os.listdir(temp_dir) if f.endswith('.db')]
                     if not db_files:
                         show_message(
                             self,
                             "Erro",
-                            f"O arquivo ZIP não contém um banco de dados (.db)\n\n"
-                            f"Arquivos encontrados: {', '.join(extracted_files) if extracted_files else 'nenhum'}",
+                            "O arquivo ZIP não contém um banco de dados (.db)",
                             ("OK",)
                         )
                         return
@@ -5795,95 +6228,33 @@ End If
                     restore_db_name = db_files[0]
                     restore_db_path = os.path.join(temp_dir, restore_db_name)
                     
-                    print(f"[Restore] 💾 Banco encontrado: {restore_db_name}")
-                    print(f"[Restore] 📂 Caminho completo: {restore_db_path}")
-                    
-                    # Verifica se os arquivos WAL e SHM existem
-                    wal_name = restore_db_name + "-wal"
-                    shm_name = restore_db_name + "-shm"
-                    has_wal = os.path.isfile(os.path.join(temp_dir, wal_name))
-                    has_shm = os.path.isfile(os.path.join(temp_dir, shm_name))
-                    
-                    print(f"[Restore] 📄 WAL presente: {has_wal}")
-                    print(f"[Restore] 📄 SHM presente: {has_shm}")
-                    
-                    # Valida integridade do banco com as novas funções
+                    # Valida integridade do banco
                     try:
                         import sqlite3
-                        
-                        # Se tiver WAL, precisa consolidar primeiro
-                        if has_wal:
-                            print(f"[Restore] 🔄 Consolidando WAL no banco principal...")
-                            temp_conn = sqlite3.connect(restore_db_path, timeout=10)
-                            temp_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                            temp_conn.close()
-                            print(f"[Restore] ✅ WAL consolidado")
-                        
-                        test_conn = sqlite3.connect(restore_db_path, timeout=10)
-                        test_conn.row_factory = sqlite3.Row
-                        
-                        # Usa PRAGMA integrity_check
-                        cur = test_conn.cursor()
-                        result = cur.execute("PRAGMA integrity_check").fetchone()
-                        
-                        if result and result[0] != "ok":
-                            # Banco está corrompido, tenta reparar
-                            print(f"[Restore] ⚠️ Banco corrompido detectado: {result[0]}")
-                            print(f"[Restore] 🔧 Tentando reparar...")
-                            test_conn.close()
-                            
-                            # Usa função de reparo
-                            from core.database import Database
-                            temp_db = Database(restore_db_path)
-                            success, msg = temp_db.repair_database()
-                            
-                            if not success:
-                                show_message(
-                                    self,
-                                    "Erro",
-                                    f"O banco de dados no backup está corrompido e não pôde ser reparado:\n\n{msg}",
-                                    ("OK",)
-                                )
-                                return
-                            
-                            print(f"[Restore] ✅ Banco reparado: {msg}")
-                        else:
-                            test_conn.close()
-                            print(f"[Restore] ✅ Integridade do banco validada")
-                            
+                        test_conn = sqlite3.connect(restore_db_path)
+                        test_conn.execute("PRAGMA integrity_check")
+                        test_conn.close()
+                        print(f"[Restore] ✅ Integridade do banco validada")
                     except Exception as e:
-                        print(f"[Restore] ❌ Erro na validação: {e}")
                         show_message(
                             self,
                             "Erro",
-                            f"Erro ao validar o banco de dados no backup:\n\n{e}",
+                            f"O banco de dados no backup está corrompido:\n\n{e}",
                             ("OK",)
                         )
                         return
                     
-                    # Fecha todas as conexões com o banco atual
-                    try:
-                        if hasattr(self, 'db') and self.db:
-                            print(f"[Restore] 🔌 Fechando conexão atual...")
-                            self.db.conn.close()
-                    except Exception as e:
-                        print(f"[Restore] ⚠️ Erro ao fechar conexão: {e}")
-                    
                     # Remove arquivos antigos
                     try:
-                        print(f"[Restore] 🗑️ Removendo banco antigo...")
                         if os.path.isfile(current_db_path):
                             os.remove(current_db_path)
-                            print(f"[Restore] ✅ Banco principal removido")
                         
                         wal_path = current_db_path + "-wal"
                         shm_path = current_db_path + "-shm"
                         if os.path.isfile(wal_path):
                             os.remove(wal_path)
-                            print(f"[Restore] ✅ WAL removido")
                         if os.path.isfile(shm_path):
                             os.remove(shm_path)
-                            print(f"[Restore] ✅ SHM removido")
                     except Exception as e:
                         print(f"[Restore] ⚠️ Erro ao remover arquivos antigos: {e}")
                     
@@ -6971,467 +7342,6 @@ End If
             return f"{drive_letter.upper()}:" in result.stdout
         except Exception:
             return False
-    
-    def repair_database(self) -> None:
-        """Tenta reparar um banco de dados corrompido"""
-        try:
-            from core.config import get_database_path
-            
-            # Confirma ação
-            response = show_message(
-                self,
-                "🔧 Reparar Banco de Dados",
-                "⚠️ ATENÇÃO: Esta operação tentará reparar o banco de dados corrompido!\n\n"
-                "O processo irá:\n"
-                "• Criar backup do banco corrompido\n"
-                "• Tentar recuperar todos os dados possíveis\n"
-                "• Criar um novo banco com os dados recuperados\n\n"
-                "💾 Recomendamos fazer um backup manual primeiro!\n\n"
-                "Deseja continuar?",
-                ("Sim, Reparar", "Não")
-            )
-            
-            if response != 0:
-                return
-            
-            # Mostra progresso
-            from PyQt6.QtCore import QTimer
-            
-            progress = QProgressDialog(
-                "🔧 Reparando banco de dados...\n\n"
-                "Isso pode levar alguns minutos.\n"
-                "Não feche o programa!",
-                None,
-                0, 0,
-                self
-            )
-            progress.setWindowTitle("Reparando Banco")
-            progress.setWindowModality(Qt.WindowModality.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.show()
-            QApplication.processEvents()
-            
-            db_path = get_database_path()
-            
-            # Fecha conexão atual se houver
-            try:
-                if hasattr(self, 'db') and self.db:
-                    self.db.conn.close()
-            except:
-                pass
-            
-            # Cria nova instância para reparo
-            from core.database import Database
-            repair_db = Database(db_path)
-            
-            # Verifica integridade primeiro
-            is_ok, msg = repair_db.verify_integrity()
-            
-            if is_ok:
-                progress.close()
-                show_message(
-                    self,
-                    "✅ Banco Íntegro",
-                    "O banco de dados está íntegro e não precisa de reparo!\n\n"
-                    f"Verificação: {msg}",
-                    ("OK",)
-                )
-                return
-            
-            # Banco está corrompido, tenta reparar
-            print(f"[Repair] ⚠️ {msg}")
-            print(f"[Repair] 🔧 Iniciando reparo...")
-            
-            success, repair_msg = repair_db.repair_database()
-            
-            progress.close()
-            
-            if success:
-                show_message(
-                    self,
-                    "✅ Reparo Concluído",
-                    f"Banco de dados reparado com sucesso!\n\n{repair_msg}\n\n"
-                    "⚠️ Reinicie o sistema para aplicar as mudanças.",
-                    ("OK",)
-                )
-                
-                if self.toast_cb:
-                    self.toast_cb("✅ Banco reparado com sucesso")
-            else:
-                show_message(
-                    self,
-                    "❌ Falha no Reparo",
-                    f"Não foi possível reparar o banco de dados:\n\n{repair_msg}\n\n"
-                    "💡 Sugestões:\n"
-                    "• Use 'Restaurar Backup' para restaurar de um backup\n"
-                    "• Entre em contato com o suporte técnico",
-                    ("OK",)
-                )
-                
-        except Exception as e:
-            show_message(
-                self,
-                "Erro",
-                f"Erro ao tentar reparar:\n\n{e}",
-                ("OK",)
-            )
-
-
-class DashboardPage(BasePage):
-    """Dashboard com gráficos de vendas e produção"""
-    def __init__(self, db: Database, toast_cb: Optional[Callable[[str], None]] = None) -> None:
-        super().__init__("Dashboard", "Visão geral de vendas e produção")
-        self.db = db
-        self.toast_cb = toast_cb
-        
-        # Layout principal
-        main_layout = QVBoxLayout(self.body)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        
-        # === Cards com resumo de estatísticas ===
-        cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(10)
-        
-        # Card: Total de Vendas
-        self.card_vendas = self._create_stat_card("💰 Total de Vendas", "R$ 0,00", "#8b5cf6")
-        cards_layout.addWidget(self.card_vendas)
-        
-        # Card: Pedidos em Produção
-        self.card_producao = self._create_stat_card("🔨 Em Produção", "0", "#f59e0b")
-        cards_layout.addWidget(self.card_producao)
-        
-        # Card: Pedidos Prontos
-        self.card_prontos = self._create_stat_card("✅ Prontos", "0", "#10b981")
-        cards_layout.addWidget(self.card_prontos)
-        
-        # Card: Total de Clientes
-        self.card_clientes = self._create_stat_card("👥 Clientes", "0", "#3b82f6")
-        cards_layout.addWidget(self.card_clientes)
-        
-        main_layout.addLayout(cards_layout)
-        
-        # === Gráficos ===
-        graficos_layout = QHBoxLayout()
-        graficos_layout.setSpacing(10)
-        
-        # Gráfico 1: Vendas por Mês (Barras)
-        vendas_group = QGroupBox("📊 Vendas dos Últimos 6 Meses")
-        vendas_group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 13px; padding: 8px; }")
-        vendas_layout = QVBoxLayout(vendas_group)
-        self.chart_vendas = self._create_bar_chart()
-        vendas_layout.addWidget(self.chart_vendas)
-        graficos_layout.addWidget(vendas_group)
-        
-        # Gráfico 2: Status dos Pedidos (Pizza)
-        status_group = QGroupBox("📈 Status dos Pedidos")
-        status_group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 13px; padding: 8px; }")
-        status_layout = QVBoxLayout(status_group)
-        self.chart_status = self._create_pie_chart()
-        status_layout.addWidget(self.chart_status)
-        graficos_layout.addWidget(status_group)
-        
-        main_layout.addLayout(graficos_layout)
-        
-        # === Tabela: Produtos Mais Vendidos ===
-        produtos_group = QGroupBox("🏆 Top 10 Produtos Mais Vendidos")
-        produtos_group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 13px; padding: 8px; }")
-        produtos_layout = QVBoxLayout(produtos_group)
-        
-        self.table_top_produtos = QTableWidget()
-        self.table_top_produtos.setColumnCount(4)
-        self.table_top_produtos.setHorizontalHeaderLabels(["Produto", "Quantidade Vendida", "Receita Total", "Preço Médio"])
-        
-        # Configurar header para auto-ajustar e quebrar texto
-        header = self.table_top_produtos.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        header.setMinimumSectionSize(80)
-        
-        # Configurar comportamento da tabela
-        self.table_top_produtos.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table_top_produtos.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table_top_produtos.setMinimumHeight(250)
-        self.table_top_produtos.setWordWrap(True)
-        
-        produtos_layout.addWidget(self.table_top_produtos)
-        main_layout.addLayout(QVBoxLayout())
-        main_layout.addWidget(produtos_group)
-        
-        main_layout.addStretch()
-        
-        # Carregar dados iniciais
-        self.refresh()
-    
-    def _create_stat_card(self, title: str, value: str, color: str) -> QFrame:
-        """Cria um card de estatística"""
-        card = QFrame()
-        card.setObjectName("StatCard")
-        card.setStyleSheet(f"""
-            QFrame#StatCard {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {color}, stop:1 {color}dd);
-                border-radius: 10px;
-                padding: 15px;
-                min-height: 80px;
-                max-height: 90px;
-            }}
-            QLabel {{
-                color: white;
-                background: transparent;
-            }}
-        """)
-        
-        layout = QVBoxLayout(card)
-        layout.setSpacing(3)
-        
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 12px; font-weight: normal;")
-        layout.addWidget(title_label)
-        
-        value_label = QLabel(value)
-        value_label.setObjectName("CardValue")
-        value_label.setStyleSheet("font-size: 24px; font-weight: bold;")
-        layout.addWidget(value_label)
-        
-        layout.addStretch()
-        
-        # Salvar referência ao label de valor
-        card.value_label = value_label
-        
-        return card
-    
-    def _create_bar_chart(self) -> QLabel:
-        """Cria gráfico de barras (vendas por mês) usando caracteres Unicode"""
-        chart = QLabel()
-        chart.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        chart.setStyleSheet("background: white; border-radius: 8px; padding: 15px; min-height: 180px; max-height: 200px;")
-        chart.setObjectName("BarChart")
-        return chart
-    
-    def _create_pie_chart(self) -> QLabel:
-        """Cria gráfico de pizza (status dos pedidos) usando texto"""
-        chart = QLabel()
-        chart.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        chart.setStyleSheet("background: white; border-radius: 8px; padding: 15px; min-height: 180px; max-height: 200px; font-family: 'Courier New';")
-        chart.setObjectName("PieChart")
-        chart.setWordWrap(True)
-        return chart
-    
-    def refresh(self) -> None:
-        """Atualiza todos os dados do dashboard"""
-        try:
-            # === Atualizar Cards ===
-            
-            # Total de vendas (soma dos totais dos pedidos)
-            vendas_result = self.db.query("""
-                SELECT SUM(total) as total
-                FROM orders
-                WHERE status != 'Cancelado'
-            """)
-            total_vendas = float(vendas_result[0]["total"]) if vendas_result and vendas_result[0]["total"] else 0.0
-            self.card_vendas.value_label.setText(format_price_br(total_vendas))
-            
-            # Pedidos em produção
-            producao_result = self.db.query("SELECT COUNT(*) as c FROM orders WHERE status='Produção'")
-            total_producao = int(producao_result[0]["c"]) if producao_result else 0
-            self.card_producao.value_label.setText(str(total_producao))
-            
-            # Pedidos prontos
-            prontos_result = self.db.query("SELECT COUNT(*) as c FROM orders WHERE status='Pronto'")
-            total_prontos = int(prontos_result[0]["c"]) if prontos_result else 0
-            self.card_prontos.value_label.setText(str(total_prontos))
-            
-            # Total de clientes
-            clientes_result = self.db.query("SELECT COUNT(*) as c FROM customers")
-            total_clientes = int(clientes_result[0]["c"]) if clientes_result else 0
-            self.card_clientes.value_label.setText(str(total_clientes))
-            
-            # === Atualizar Gráfico de Vendas por Mês ===
-            self._update_vendas_chart()
-            
-            # === Atualizar Gráfico de Status ===
-            self._update_status_chart()
-            
-            # === Atualizar Top Produtos ===
-            self._update_top_produtos()
-            
-        except Exception as e:
-            print(f"Erro ao atualizar dashboard: {e}")
-    
-    def _update_vendas_chart(self) -> None:
-        """Atualiza gráfico de vendas dos últimos 6 meses"""
-        try:
-            # Buscar vendas por mês
-            vendas_por_mes = self.db.query("""
-                SELECT 
-                    strftime('%Y-%m', created_at) as mes,
-                    SUM(total) as total
-                FROM orders
-                WHERE status != 'Cancelado'
-                    AND created_at >= date('now', '-6 months')
-                GROUP BY mes
-                ORDER BY mes
-            """)
-            
-            if not vendas_por_mes:
-                self.chart_vendas.setText("📊 Sem dados de vendas nos últimos 6 meses")
-                return
-            
-            # Processar dados
-            meses = []
-            valores = []
-            
-            # Mapeamento de meses em português
-            meses_pt = {
-                'Jan': 'Jan', 'Feb': 'Fev', 'Mar': 'Mar', 'Apr': 'Abr',
-                'May': 'Mai', 'Jun': 'Jun', 'Jul': 'Jul', 'Aug': 'Ago',
-                'Sep': 'Set', 'Oct': 'Out', 'Nov': 'Nov', 'Dec': 'Dez'
-            }
-            
-            for row in vendas_por_mes:
-                mes_str = row["mes"]
-                valor = float(row["total"]) if row["total"] else 0.0
-                
-                # Converter mes (YYYY-MM) para nome abreviado em português
-                try:
-                    mes_date = datetime.strptime(mes_str, "%Y-%m")
-                    mes_eng = mes_date.strftime("%b")
-                    mes_pt_nome = meses_pt.get(mes_eng, mes_eng)
-                    ano = mes_date.strftime("%y")
-                    mes_nome = f"{mes_pt_nome}/{ano}"
-                except:
-                    mes_nome = mes_str
-                
-                meses.append(mes_nome)
-                valores.append(valor)
-            
-            # Criar gráfico de barras ASCII organizado
-            max_valor = max(valores) if valores else 1
-            chart_text = "<div style='font-family: Consolas, monospace; font-size: 11px;'>"
-            
-            for i, (mes, valor) in enumerate(zip(meses, valores)):
-                # Calcular altura da barra (max 15 caracteres para melhor visualização)
-                altura = int((valor / max_valor) * 15) if max_valor > 0 else 0
-                barra = "█" * altura
-                valor_formatado = format_price_br(valor)
-                
-                # Cor alternada
-                cor = "#8b5cf6" if i % 2 == 0 else "#a78bfa"
-                
-                # Usar espaços não-quebráveis para alinhamento perfeito
-                mes_display = mes.replace(" ", "&nbsp;")
-                espacos = "&nbsp;" * (7 - len(mes))  # Pad para 7 caracteres
-                
-                chart_text += f"<div>"
-                chart_text += f"<span style='color: #555; font-weight: bold;'>{mes_display}</span>{espacos}&nbsp;"
-                chart_text += f"<span style='color: {cor};'>{barra}</span>&nbsp;"
-                chart_text += f"<span style='color: #333; font-weight: 600;'>{valor_formatado}</span>"
-                chart_text += f"</div>"
-            
-            chart_text += "</div>"
-            self.chart_vendas.setText(chart_text)
-            
-        except Exception as e:
-            self.chart_vendas.setText(f"❌ Erro ao carregar gráfico: {e}")
-    
-    def _update_status_chart(self) -> None:
-        """Atualiza gráfico de status dos pedidos"""
-        try:
-            # Buscar contagem por status
-            status_counts = self.db.query("""
-                SELECT status, COUNT(*) as count
-                FROM orders
-                GROUP BY status
-                ORDER BY count DESC
-            """)
-            
-            if not status_counts:
-                self.chart_status.setText("📈 Sem pedidos cadastrados")
-                return
-            
-            # Calcular total
-            total = sum(int(row["count"]) for row in status_counts)
-            
-            # Criar visualização de pizza textual
-            chart_text = "<div style='font-size: 12px; line-height: 1.8;'>"
-            
-            status_colors = {
-                "Produção": "#f59e0b",
-                "Pronto": "#10b981",
-                "Entregue": "#3b82f6",
-                "Cancelado": "#ef4444",
-                "Pendente": "#6b7280"
-            }
-            
-            for row in status_counts:
-                status = row["status"]
-                count = int(row["count"])
-                percentual = (count / total * 100) if total > 0 else 0
-                
-                cor = status_colors.get(status, "#8b5cf6")
-                
-                # Barra de progresso
-                barra_tamanho = int(percentual / 5)  # Cada █ representa 5%
-                barra = "█" * barra_tamanho
-                
-                chart_text += f"<div><b style='color: {cor};'>{status}:</b> {count} pedido(s) <span style='color: {cor};'>({percentual:.1f}%)</span></div>"
-                chart_text += f"<div style='color: {cor}; margin-bottom: 8px;'>{barra}</div>"
-            
-            chart_text += "</div>"
-            self.chart_status.setText(chart_text)
-            
-        except Exception as e:
-            self.chart_status.setText(f"❌ Erro ao carregar gráfico: {e}")
-    
-    def _update_top_produtos(self) -> None:
-        """Atualiza tabela de produtos mais vendidos"""
-        try:
-            top_produtos = self.db.query("""
-                SELECT 
-                    p.name,
-                    SUM(o.quantity) as total_quantidade,
-                    SUM(o.total) as receita_total,
-                    p.price as preco
-                FROM orders o
-                JOIN products p ON o.product_id = p.id
-                WHERE o.status != 'Cancelado'
-                GROUP BY p.id
-                ORDER BY total_quantidade DESC
-                LIMIT 10
-            """)
-            
-            self.table_top_produtos.setRowCount(0)
-            
-            if not top_produtos:
-                return
-            
-            for row_data in top_produtos:
-                row = self.table_top_produtos.rowCount()
-                self.table_top_produtos.insertRow(row)
-                
-                # Nome do produto
-                self.table_top_produtos.setItem(row, 0, QTableWidgetItem(row_data["name"]))
-                
-                # Quantidade vendida
-                qtd_item = QTableWidgetItem(str(int(row_data["total_quantidade"])))
-                qtd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table_top_produtos.setItem(row, 1, qtd_item)
-                
-                # Receita total
-                receita = float(row_data["receita_total"]) if row_data["receita_total"] else 0.0
-                receita_item = QTableWidgetItem(format_price_br(receita))
-                receita_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table_top_produtos.setItem(row, 2, receita_item)
-                
-                # Preço médio
-                preco = float(row_data["preco"]) if row_data["preco"] else 0.0
-                preco_item = QTableWidgetItem(format_price_br(preco))
-                preco_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table_top_produtos.setItem(row, 3, preco_item)
-            
-        except Exception as e:
-            print(f"Erro ao atualizar top produtos: {e}")
 
 
 class CustomersPage(BasePage):
@@ -9416,11 +9326,10 @@ class UpdateDialog(QDialog):
 
 
 class SettingsPage(BasePage):
-    def __init__(self, db: Database, app: QApplication, parent_window: QMainWindow,
+    def __init__(self, app: QApplication, parent_window: QMainWindow,
                  toast_cb: Optional[Callable[[str], None]] = None,
                  backup_cb: Optional[Callable[[], None]] = None) -> None:
         super().__init__("Configurações", "Personalização do sistema")
-        self.db = db
         self.app = app
         self.parent_window = parent_window
         self.toast_cb = toast_cb
@@ -9436,138 +9345,14 @@ class SettingsPage(BasePage):
         theme_title = QLabel("<b>🎨 Aparência</b>")
         theme_layout.addWidget(theme_title)
         
-        # Primeira linha de botões: Escuro e Claro
-        theme_buttons_1 = QHBoxLayout()
-        self.btn_dark: QPushButton = QPushButton("🌙 Tema Escuro")
-        self.btn_light: QPushButton = QPushButton("☀️ Tema Claro")
-        theme_buttons_1.addWidget(self.btn_dark)
-        theme_buttons_1.addWidget(self.btn_light)
-        theme_buttons_1.addStretch(1)
-        theme_layout.addLayout(theme_buttons_1)
-        
-        # Segunda linha de botões: Rosa, Roxo e Azul
-        theme_buttons_2 = QHBoxLayout()
-        self.btn_pink: QPushButton = QPushButton("🌸 Tema Rosa")
-        self.btn_purple: QPushButton = QPushButton("💜 Tema Roxo")
-        self.btn_blue: QPushButton = QPushButton("💙 Tema Azul")
-        theme_buttons_2.addWidget(self.btn_pink)
-        theme_buttons_2.addWidget(self.btn_purple)
-        theme_buttons_2.addWidget(self.btn_blue)
-        theme_buttons_2.addStretch(1)
-        theme_layout.addLayout(theme_buttons_2)
-        
+        theme_buttons = QHBoxLayout()
+        self.btn_dark: QPushButton = QPushButton("Tema Escuro")
+        self.btn_light: QPushButton = QPushButton("Tema Claro")
+        theme_buttons.addWidget(self.btn_dark)
+        theme_buttons.addWidget(self.btn_light)
+        theme_buttons.addStretch(1)
+        theme_layout.addLayout(theme_buttons)
         bl.addWidget(theme_group)
-        
-        # === Seção: Empresa ===
-        company_group = QFrame()
-        company_group.setObjectName("SettingsGroup")
-        company_layout = QVBoxLayout(company_group)
-        company_title = QLabel("<b>🏢 Empresa</b>")
-        company_layout.addWidget(company_title)
-        
-        # Carregar dados atuais da empresa
-        try:
-            company_data = self.db.query("SELECT name, logo_path FROM company WHERE id=1")
-            if company_data:
-                self.current_company_name = company_data[0]["name"]
-                self.current_logo_path = company_data[0]["logo_path"]
-            else:
-                self.current_company_name = "Confeitaria"
-                self.current_logo_path = None
-        except Exception:
-            self.current_company_name = "Confeitaria"
-            self.current_logo_path = None
-        
-        # Nome da empresa
-        name_layout = QHBoxLayout()
-        name_label = QLabel("Nome da Empresa:")
-        name_layout.addWidget(name_label)
-        
-        self.company_name_input = QLineEdit()
-        self.company_name_input.setText(self.current_company_name)
-        self.company_name_input.setPlaceholderText("Digite o nome da empresa")
-        name_layout.addWidget(self.company_name_input, 1)
-        
-        btn_save_name = QPushButton("💾 Salvar Nome")
-        cast(Any, btn_save_name.clicked).connect(self.save_company_name)
-        name_layout.addWidget(btn_save_name)
-        
-        company_layout.addLayout(name_layout)
-        
-        # Logo da empresa
-        logo_layout = QHBoxLayout()
-        logo_label = QLabel("Logo da Empresa:")
-        logo_layout.addWidget(logo_label)
-        
-        self.logo_preview = QLabel()
-        self.logo_preview.setFixedSize(64, 64)
-        self.logo_preview.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #cbd5e1;
-                border-radius: 8px;
-                background: #f8fafc;
-            }
-        """)
-        self.logo_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        # Carregar logo se existir
-        if self.current_logo_path and os.path.exists(self.current_logo_path):
-            from PyQt6.QtGui import QPixmap
-            pixmap = QPixmap(self.current_logo_path)
-            if not pixmap.isNull():
-                self.logo_preview.setPixmap(pixmap.scaled(60, 60, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            else:
-                self.logo_preview.setText("🖼️")
-        else:
-            self.logo_preview.setText("🖼️")
-        
-        logo_layout.addWidget(self.logo_preview)
-        
-        btn_select_logo = QPushButton("📁 Selecionar Logo")
-        cast(Any, btn_select_logo.clicked).connect(self.select_company_logo)
-        logo_layout.addWidget(btn_select_logo)
-        
-        btn_remove_logo = QPushButton("🗑️ Remover Logo")
-        cast(Any, btn_remove_logo.clicked).connect(self.remove_company_logo)
-        logo_layout.addWidget(btn_remove_logo)
-        
-        logo_layout.addStretch(1)
-        company_layout.addLayout(logo_layout)
-        
-        # Descrição
-        info_label = QLabel("💡 A logo será exibida no topo do sistema")
-        info_label.setStyleSheet("color: #6b7280; font-size: 11px; margin-top: 5px;")
-        company_layout.addWidget(info_label)
-        
-        bl.addWidget(company_group)
-        
-        # === Seção: Atualização ===
-        update_group = QFrame()
-        update_group.setObjectName("SettingsGroup")
-        update_layout = QVBoxLayout(update_group)
-        update_title = QLabel("<b>🔄 Atualização do Sistema</b>")
-        update_layout.addWidget(update_title)
-        
-        # Exibir versão atual
-        try:
-            from core.updater import CURRENT_VERSION
-            version_label = QLabel(f"Versão atual: <b>{CURRENT_VERSION}</b>")
-            version_label.setStyleSheet("color: #6b7280; font-size: 12px; margin-bottom: 8px;")
-            update_layout.addWidget(version_label)
-        except Exception:
-            pass
-        
-        # Botão de verificar atualização
-        self.btn_check_update = QPushButton("🔍 Verificar Atualizações")
-        cast(Any, self.btn_check_update.clicked).connect(self.check_for_updates)
-        update_layout.addWidget(self.btn_check_update)
-        
-        # Info sobre atualizações
-        update_info = QLabel("💡 O sistema baixa apenas os arquivos modificados (~500KB)")
-        update_info.setStyleSheet("color: #6b7280; font-size: 11px; margin-top: 5px;")
-        update_layout.addWidget(update_info)
-        
-        bl.addWidget(update_group)
         
         # === Seção: Backup ===
         if backup_cb:
@@ -9583,292 +9368,337 @@ class SettingsPage(BasePage):
             
             bl.addWidget(backup_group)
         
+        # === Seção: Atualizações ===
+        try:
+            from core.updater import (
+                check_for_updates, UpdaterThread, get_current_version
+            )
+            UPDATER_AVAILABLE = True
+        except ImportError:
+            UPDATER_AVAILABLE = False
+            print("⚠️ Módulo de atualização não disponível")
+        
+        if UPDATER_AVAILABLE:
+            update_group = QFrame()
+            update_group.setObjectName("SettingsGroup")
+            update_layout = QVBoxLayout(update_group)
+            
+            update_title = QLabel("<b>🔄 Atualizações</b>")
+            update_layout.addWidget(update_title)
+            
+            # Informações de versão
+            self.lbl_version = QLabel(f"Versão instalada: v{get_current_version()}")
+            self.lbl_version.setStyleSheet("font-weight: bold; margin-top: 5px;")
+            update_layout.addWidget(self.lbl_version)
+            
+            self.lbl_update_status = QLabel("Verificando atualizações...")
+            self.lbl_update_status.setStyleSheet("color: #6b7280; margin-bottom: 10px;")
+            update_layout.addWidget(self.lbl_update_status)
+            
+            # Botões de atualização
+            btn_update_layout = QHBoxLayout()
+            
+            self.btn_check_update = QPushButton("🔍 Verificar Atualizações")
+            cast(Any, self.btn_check_update.clicked).connect(self.check_updates)
+            btn_update_layout.addWidget(self.btn_check_update)
+            
+            self.btn_install_update = QPushButton("⬇️ Instalar Atualização")
+            cast(Any, self.btn_install_update.clicked).connect(self.install_update)
+            self.btn_install_update.setEnabled(False)
+            self.btn_install_update.setStyleSheet("""
+                QPushButton {
+                    background: #10b981;
+                    color: white;
+                    font-weight: bold;
+                    padding: 8px 16px;
+                }
+                QPushButton:hover {
+                    background: #059669;
+                }
+                QPushButton:disabled {
+                    background: #6b7280;
+                    color: #d1d5db;
+                }
+            """)
+            btn_update_layout.addWidget(self.btn_install_update)
+            btn_update_layout.addStretch(1)
+            
+            update_layout.addLayout(btn_update_layout)
+            
+            # Changelog
+            self.lbl_changelog = QLabel("")
+            self.lbl_changelog.setWordWrap(True)
+            self.lbl_changelog.setStyleSheet("""
+                QLabel {
+                    background: rgba(59, 130, 246, 0.1);
+                    border: 1px solid rgba(59, 130, 246, 0.3);
+                    border-radius: 8px;
+                    padding: 10px;
+                    margin-top: 10px;
+                }
+            """)
+            self.lbl_changelog.hide()
+            update_layout.addWidget(self.lbl_changelog)
+            
+            bl.addWidget(update_group)
+            
+            # Verifica atualizações ao iniciar (após 2 segundos)
+            cast(Any, QTimer).singleShot(2000, self.check_updates_silent)
+        
         bl.addStretch(1)
         
         # Conecta eventos (tema com persistência)
         cast(Any, self.btn_dark.clicked).connect(lambda: self.set_theme('dark'))
         cast(Any, self.btn_light.clicked).connect(lambda: self.set_theme('light'))
-        cast(Any, self.btn_pink.clicked).connect(lambda: self.set_theme('pink'))
-        cast(Any, self.btn_purple.clicked).connect(lambda: self.set_theme('purple'))
-        cast(Any, self.btn_blue.clicked).connect(lambda: self.set_theme('blue'))
     
     def set_theme(self, theme: str) -> None:
-        """Aplica e salva o tema escolhido (dark/light/pink/purple/blue)."""
+        """Aplica e salva o tema escolhido (dark/light)."""
         try:
             from core.config import load_config, save_config
-            # Aplica o QSS correspondente ao tema
+            # Aplica apenas o QSS base (sem concatenação que pode causar problemas)
             if theme == 'dark':
                 self.app.setStyleSheet(qss_dark())
-                theme_name = 'escuro'
-            elif theme == 'pink':
-                self.app.setStyleSheet(qss_pink())
-                theme_name = 'rosa'
-            elif theme == 'purple':
-                self.app.setStyleSheet(qss_purple())
-                theme_name = 'roxo'
-            elif theme == 'blue':
-                self.app.setStyleSheet(qss_blue())
-                theme_name = 'azul'
-            else:  # light
+            else:
                 self.app.setStyleSheet(qss_light())
-                theme_name = 'claro'
-            
             # Persiste em config.yaml
             cfg = load_config()
-            cfg['theme'] = theme
+            cfg['theme'] = 'dark' if theme == 'dark' else 'light'
             save_config(cfg)
             
             if self.toast_cb:
-                self.toast_cb(f"Tema {theme_name} aplicado e salvo.")
+                self.toast_cb(f"Tema {'escuro' if theme=='dark' else 'claro'} aplicado e salvo.")
         except Exception as e:
             try:
                 show_message(self.parent_window, 'Erro', f'Não foi possível aplicar/salvar o tema: {e}', ('OK',))
             except Exception:
                 pass
     
-    def save_company_name(self) -> None:
-        """Salva o nome da empresa no banco de dados"""
+    def check_updates_silent(self) -> None:
+        """Verifica atualizações silenciosamente (sem mostrar erros)"""
         try:
-            new_name = self.company_name_input.text().strip()
-            if not new_name:
-                show_message(self.parent_window, 'Atenção', 'Por favor, digite um nome para a empresa.', ('OK',))
+            from core.updater import check_for_updates
+            
+            has_update, version_info, error = check_for_updates(timeout=5)
+            
+            if error:
+                self.lbl_update_status.setText("✓ Sistema atualizado")
+                self.lbl_update_status.setStyleSheet("color: #10b981;")
                 return
             
-            # Atualizar no banco
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.execute("UPDATE company SET name=?, updated_at=? WHERE id=1", (new_name, now))
-            
-            self.current_company_name = new_name
-            
-            # Atualizar título da janela principal
-            if hasattr(self.parent_window, '_update_window_title'):
-                self.parent_window._update_window_title()
-            
-            if self.toast_cb:
-                self.toast_cb(f"✓ Nome da empresa atualizado para '{new_name}'")
+            if has_update and version_info:
+                remote_version = version_info.get('version', 'desconhecida')
+                self.lbl_update_status.setText(f"🎉 Nova versão disponível: v{remote_version}")
+                self.lbl_update_status.setStyleSheet("color: #f59e0b; font-weight: bold;")
+                self.btn_install_update.setEnabled(True)
+                
+                # Mostra changelog
+                changelog = version_info.get('changelog', [])
+                if changelog:
+                    changelog_text = "📋 Novidades:\n" + "\n".join(f"  • {item}" for item in changelog[:5])
+                    self.lbl_changelog.setText(changelog_text)
+                    self.lbl_changelog.show()
+                
+                # Toast de notificação
+                if self.toast_cb:
+                    self.toast_cb(f"Nova versão v{remote_version} disponível!")
+            else:
+                self.lbl_update_status.setText("✓ Sistema atualizado")
+                self.lbl_update_status.setStyleSheet("color: #10b981;")
                 
         except Exception as e:
-            show_message(self.parent_window, 'Erro', f'Não foi possível salvar o nome da empresa: {e}', ('OK',))
+            print(f"Erro ao verificar atualizações: {e}")
+            self.lbl_update_status.setText("✓ Sistema atualizado")
+            self.lbl_update_status.setStyleSheet("color: #10b981;")
     
-    def select_company_logo(self) -> None:
-        """Permite selecionar uma imagem para logo da empresa"""
+    def check_updates(self) -> None:
+        """Verifica atualizações (com feedback ao usuário)"""
         try:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self.parent_window,
-                "Selecionar Logo da Empresa",
-                "",
-                "Imagens (*.png *.jpg *.jpeg *.bmp *.gif *.svg);;Todos os arquivos (*.*)"
-            )
+            from core.updater import check_for_updates, get_current_version
             
-            if not file_path:
-                return
-            
-            # Copiar imagem para pasta da aplicação
-            import shutil
-            logo_dir = os.path.join(APP_DIR, "assets", "company")
-            os.makedirs(logo_dir, exist_ok=True)
-            
-            # Nome do arquivo de destino
-            file_ext = os.path.splitext(file_path)[1]
-            dest_path = os.path.join(logo_dir, f"logo{file_ext}")
-            
-            # Copiar arquivo
-            shutil.copy2(file_path, dest_path)
-            
-            # Atualizar no banco
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.execute("UPDATE company SET logo_path=?, updated_at=? WHERE id=1", (dest_path, now))
-            
-            self.current_logo_path = dest_path
-            
-            # Atualizar preview
-            from PyQt6.QtGui import QPixmap
-            pixmap = QPixmap(dest_path)
-            if not pixmap.isNull():
-                self.logo_preview.setPixmap(pixmap.scaled(60, 60, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            
-            # Atualizar logo no cabeçalho da janela principal
-            if hasattr(self.parent_window, '_update_header_logo'):
-                self.parent_window._update_header_logo(dest_path)
-            
-            if self.toast_cb:
-                self.toast_cb("✓ Logo da empresa atualizada")
-                
-        except Exception as e:
-            show_message(self.parent_window, 'Erro', f'Não foi possível salvar a logo: {e}', ('OK',))
-    
-    def remove_company_logo(self) -> None:
-        """Remove a logo da empresa"""
-        try:
-            # Confirmar remoção
-            reply = show_message(
-                self.parent_window,
-                'Confirmar',
-                'Deseja realmente remover a logo da empresa?',
-                ('Sim', 'Não'),
-                default=1
-            )
-            
-            if reply != 0:  # Não clicou em "Sim"
-                return
-            
-            # Atualizar no banco (remover caminho)
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.execute("UPDATE company SET logo_path=NULL, updated_at=? WHERE id=1", (now,))
-            
-            # Tentar deletar arquivo físico
-            if self.current_logo_path and os.path.exists(self.current_logo_path):
-                try:
-                    os.remove(self.current_logo_path)
-                except Exception:
-                    pass  # Não é crítico se falhar
-            
-            self.current_logo_path = None
-            
-            # Resetar preview
-            self.logo_preview.clear()
-            self.logo_preview.setText("🖼️")
-            
-            # Remover logo do cabeçalho da janela principal
-            if hasattr(self.parent_window, '_update_header_logo'):
-                self.parent_window._update_header_logo(None)
-            
-            if self.toast_cb:
-                self.toast_cb("✓ Logo removida")
-                
-        except Exception as e:
-            show_message(self.parent_window, 'Erro', f'Não foi possível remover a logo: {e}', ('OK',))
-    
-    def check_for_updates(self) -> None:
-        """Verifica se há atualizações disponíveis"""
-        try:
-            from core.updater import UpdateChecker, apply_update
-            from PyQt6.QtCore import QThread
-            
-            # Desabilita botão durante verificação
             self.btn_check_update.setEnabled(False)
-            self.btn_check_update.setText("🔄 Verificando...")
+            self.btn_check_update.setText("Verificando...")
+            self.lbl_update_status.setText("Verificando atualizações...")
+            self.lbl_update_status.setStyleSheet("color: #6b7280;")
             
-            # Cria thread de verificação
-            class CheckThread(QThread):
-                def __init__(self, parent_widget):
-                    super().__init__()
-                    self.parent_widget = parent_widget
-                    self.has_update = False
-                    self.remote_version = None
-                    self.changelog = []
+            # Usa QTimer para não travar a UI
+            cast(Any, QTimer).singleShot(100, self._do_check_updates)
+        except Exception:
+            pass
+    
+    def _do_check_updates(self) -> None:
+        """Executa a verificação de atualizações"""
+        try:
+            from core.updater import check_for_updates, get_current_version
+            
+            has_update, version_info, error = check_for_updates(timeout=10)
+            
+            if error:
+                show_message(
+                    self.parent_window,
+                    "Erro ao Verificar Atualizações",
+                    f"Não foi possível verificar atualizações:\n\n{error}\n\n"
+                    "Verifique sua conexão com a internet.",
+                    ("OK",)
+                )
+                self.lbl_update_status.setText("Erro ao verificar")
+                self.lbl_update_status.setStyleSheet("color: #ef4444;")
+            elif has_update and version_info:
+                remote_version = version_info.get('version', 'desconhecida')
+                changelog = version_info.get('changelog', [])
                 
-                def run(self):
-                    try:
-                        checker = UpdateChecker()
-                        self.has_update, self.remote_version, self.changelog = checker.check_for_updates()
-                    except Exception as e:
-                        self.has_update = False
-                        self.remote_version = None
-                        self.changelog = [f"Erro: {e}"]
-            
-            def on_check_finished():
-                # Reabilita botão
-                self.btn_check_update.setEnabled(True)
-                self.btn_check_update.setText("🔍 Verificar Atualizações")
+                self.lbl_update_status.setText(f"🎉 Nova versão disponível: v{remote_version}")
+                self.lbl_update_status.setStyleSheet("color: #f59e0b; font-weight: bold;")
+                self.btn_install_update.setEnabled(True)
                 
-                if check_thread.has_update:
-                    # Mostra diálogo com changelog
-                    changelog_text = "\n".join(f"• {item}" for item in check_thread.changelog)
-                    message = f"<b>Nova versão disponível: {check_thread.remote_version}</b><br><br>"
-                    message += f"<b>Novidades:</b><br>{changelog_text.replace(chr(10), '<br>')}<br><br>"
-                    message += "Deseja atualizar agora?"
-                    
-                    reply = show_message(
-                        self.parent_window,
-                        'Atualização Disponível',
-                        message,
-                        ('Sim', 'Não'),
-                        default=0
-                    )
-                    
-                    if reply == 0:  # Clicou em "Sim"
-                        self.perform_update()
-                else:
-                    if self.toast_cb:
-                        self.toast_cb("✓ Sistema está atualizado!")
-            
-            check_thread = CheckThread(self)
-            check_thread.finished.connect(on_check_finished)
-            check_thread.start()
-            
+                # Mostra changelog
+                if changelog:
+                    changelog_text = "📋 Novidades:\n" + "\n".join(f"  • {item}" for item in changelog[:5])
+                    self.lbl_changelog.setText(changelog_text)
+                    self.lbl_changelog.show()
+                
+                # Pergunta se quer instalar
+                reply = show_message(
+                    self.parent_window,
+                    "Atualização Disponível",
+                    f"Nova versão disponível: v{remote_version}\n\n"
+                    f"Versão atual: v{get_current_version()}\n\n"
+                    "Deseja instalar agora?",
+                    ("Sim", "Não")
+                )
+                
+                if reply == 0:  # Sim
+                    self.install_update()
+            else:
+                self.lbl_update_status.setText("✓ Sistema atualizado")
+                self.lbl_update_status.setStyleSheet("color: #10b981;")
+                
+                show_message(
+                    self.parent_window,
+                    "Sistema Atualizado",
+                    f"Você já está usando a versão mais recente!\n\n"
+                    f"Versão atual: v{get_current_version()}",
+                    ("OK",)
+                )
+                
         except Exception as e:
+            show_message(
+                self.parent_window,
+                "Erro",
+                f"Erro inesperado ao verificar atualizações:\n\n{e}",
+                ("OK",)
+            )
+            self.lbl_update_status.setText("Erro ao verificar")
+            self.lbl_update_status.setStyleSheet("color: #ef4444;")
+        
+        finally:
             self.btn_check_update.setEnabled(True)
             self.btn_check_update.setText("🔍 Verificar Atualizações")
-            show_message(self.parent_window, 'Erro', f'Erro ao verificar atualizações: {e}', ('OK',))
     
-    def perform_update(self) -> None:
-        """Executa a atualização do sistema"""
+    def install_update(self) -> None:
+        """Instala a atualização disponível"""
         try:
-            from core.updater import apply_update
-            from PyQt6.QtCore import QThread
+            from core.updater import UpdaterThread
+            
+            # Confirmação
+            reply = show_message(
+                self.parent_window,
+                "Confirmar Atualização",
+                "A atualização será instalada agora.\n\n"
+                "✓ Um backup será criado automaticamente\n"
+                "✓ O processo leva cerca de 1-2 minutos\n"
+                "✓ Você precisará reiniciar o aplicativo após a instalação\n\n"
+                "Deseja continuar?",
+                ("Sim", "Não")
+            )
+            
+            if reply != 0:  # Não
+                return
+            
+            # Desabilita botões
+            self.btn_check_update.setEnabled(False)
+            self.btn_install_update.setEnabled(False)
             
             # Cria diálogo de progresso
-            progress_dialog = UpdateDialog(self.parent_window)
-            progress_dialog.show()
+            self.update_dialog = UpdateDialog(self.parent_window)
             
             # Cria thread de atualização
-            class UpdateThread(QThread):
-                progress_signal = pyqtSignal(int, str)
-                finished_signal = pyqtSignal(bool, str)
-                
-                def __init__(self):
-                    super().__init__()
-                
-                def run(self):
-                    try:
-                        def progress_callback(percent, message):
-                            self.progress_signal.emit(percent, message)
-                        
-                        success = apply_update(progress_callback)
-                        
-                        if success:
-                            self.finished_signal.emit(True, "Atualização concluída com sucesso!")
-                        else:
-                            self.finished_signal.emit(False, "Falha ao aplicar atualização.")
-                    except Exception as e:
-                        self.finished_signal.emit(False, f"Erro durante atualização: {e}")
+            self.update_thread = UpdaterThread(auto_apply=True)
+            cast(Any, self.update_thread.progress).connect(self.update_dialog.update_progress)
+            cast(Any, self.update_thread.finished).connect(self._on_update_finished)
             
-            def on_progress(percent, message):
-                progress_dialog.update_progress(percent, message)
-            
-            def on_finished(success, message):
-                progress_dialog.close()
-                
-                if success:
-                    reply = show_message(
-                        self.parent_window,
-                        'Atualização Concluída',
-                        f'{message}\n\nO sistema precisa ser reiniciado. Reiniciar agora?',
-                        ('Sim', 'Não'),
-                        default=0
-                    )
-                    
-                    if reply == 0:  # Clicou em "Sim"
-                        # Reinicia aplicação
-                        from PyQt6.QtWidgets import QApplication
-                        QApplication.quit()
-                        os.execl(sys.executable, sys.executable, *sys.argv)
-                else:
-                    show_message(self.parent_window, 'Erro', message, ('OK',))
-            
-            update_thread = UpdateThread()
-            update_thread.progress_signal.connect(on_progress)
-            update_thread.finished_signal.connect(on_finished)
-            update_thread.start()
-            
-            # Salva referência para evitar garbage collection
-            self.update_thread = update_thread
+            # Inicia atualização
+            self.update_dialog.show()
+            self.update_thread.start()
             
         except Exception as e:
-            show_message(self.parent_window, 'Erro', f'Erro ao iniciar atualização: {e}', ('OK',))
+            show_message(
+                self.parent_window,
+                "Erro",
+                f"Erro ao iniciar atualização:\n\n{e}",
+                ("OK",)
+            )
     
+    def _on_update_finished(self, success: bool, message: str) -> None:
+        """Chamado quando a atualização termina"""
+        # Fecha diálogo de progresso
+        if hasattr(self, 'update_dialog'):
+            self.update_dialog.close()
+        
+        # Reabilita botões
+        self.btn_check_update.setEnabled(True)
+        self.btn_install_update.setEnabled(False)
+        
+        if success:
+            # Atualização bem-sucedida
+            if "Atualização para v" in message:
+                # Extrai a nova versão da mensagem
+                import re
+                match = re.search(r'v([\d.]+)', message)
+                if match:
+                    new_version = match.group(1)
+                    try:
+                        from core.updater import update_version_globally
+                        update_version_globally(new_version)
+                        self.lbl_version.setText(f"Versão instalada: v{new_version}")
+                    except Exception:
+                        pass
+            
+            self.lbl_update_status.setText("✓ Atualização instalada!")
+            self.lbl_update_status.setStyleSheet("color: #10b981; font-weight: bold;")
+            self.lbl_changelog.hide()
+            
+            show_message(
+                self.parent_window,
+                "Atualização Concluída",
+                message + "\n\n"
+                "Clique em OK para reiniciar o aplicativo.",
+                ("OK",)
+            )
+            
+            # Reinicia o aplicativo
+            try:
+                import os
+                import sys
+                os.execl(sys.executable, sys.executable, *sys.argv)
+            except Exception:
+                # Se falhar, apenas fecha
+                self.parent_window.close()
+            
+        else:
+            # Erro na atualização
+            self.lbl_update_status.setText("❌ Erro ao atualizar")
+            self.lbl_update_status.setStyleSheet("color: #ef4444;")
+            
+            show_message(
+                self.parent_window,
+                "Erro na Atualização",
+                message,
+                ("OK",)
+            )
 
+# -----------------------------
+# Main Window (Shell)
+# -----------------------------
 class MainWindow(QMainWindow):
     user: Any
 
@@ -9905,9 +9735,7 @@ class MainWindow(QMainWindow):
         self._setup_window_icon()
         
         self.user = user
-        
-        # Buscar nome da empresa do banco
-        self._update_window_title()
+        self.setWindowTitle("Confeitaria")
         
         # Tamanho automático baseado na tela disponível
         from PyQt6.QtGui import QGuiApplication
@@ -9931,10 +9759,6 @@ class MainWindow(QMainWindow):
         from core.config import get_database_path
         current_db_path = get_database_path()
         
-        # Garante que o diretório existe
-        db_dir = os.path.dirname(current_db_path)
-        os.makedirs(db_dir, exist_ok=True)
-        
         # LOG IMPORTANTE: Mostrar qual banco está sendo usado
         if current_db_path.startswith('\\\\'):
             print("=" * 80)
@@ -9944,38 +9768,7 @@ class MainWindow(QMainWindow):
         else:
             print(f"📂 Usando banco de dados: {current_db_path}")
         
-        try:
-            self.db = ExtendedDatabase(current_db_path)
-        except Exception as e:
-            print(f"❌ Erro ao abrir banco de dados: {e}")
-            print(f"🔧 Tentando reparar ou criar novo banco...")
-            
-            # Se o banco está corrompido, tenta reparar
-            if os.path.exists(current_db_path):
-                try:
-                    from core.database import Database
-                    temp_db = Database(current_db_path)
-                    success, msg = temp_db.repair_database()
-                    if success:
-                        print(f"✅ Banco reparado: {msg}")
-                        self.db = ExtendedDatabase(current_db_path)
-                    else:
-                        raise Exception(f"Falha no reparo: {msg}")
-                except Exception as repair_error:
-                    print(f"❌ Não foi possível reparar: {repair_error}")
-                    # Remove o banco corrompido e cria um novo
-                    backup_path = current_db_path + f".corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    try:
-                        os.rename(current_db_path, backup_path)
-                        print(f"💾 Banco corrompido salvo em: {backup_path}")
-                    except:
-                        pass
-                    print(f"🆕 Criando novo banco de dados...")
-                    self.db = ExtendedDatabase(current_db_path)
-            else:
-                # Banco não existe, cria novo
-                print(f"🆕 Criando novo banco de dados...")
-                self.db = ExtendedDatabase(current_db_path)
+        self.db = ExtendedDatabase(current_db_path)
         # Adicionar atributos para controle de visibilidade 
         setattr(self.db, 'current_role', 'common')  # valor padrão
         setattr(self.db, 'current_user', 'unknown')  # valor padrão
@@ -10008,13 +9801,13 @@ class MainWindow(QMainWindow):
         self.sidebar: QListWidget = QListWidget()
         self.sidebar.setObjectName("Sidebar")
         self.sidebar.setIconSize(QSize(20, 20))
-        # Ordem do menu: Dashboard, Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
-        labels = ["Dashboard", "Clientes", "Pronta entrega", "Produção", "Pedidos", "Produtos", "Configurações"]
+        # Oculta a guia Dashboard (mantemos a lógica carregada, mas não exibimos a aba)
+        # Ordem do menu: Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
+        labels = ["Clientes", "Pronta entrega", "Produção", "Pedidos", "Produtos", "Configurações"]
         for name in labels:
             item = QListWidgetItem(name)
             # Usa função segura para ícones
             icon_map = {
-                "Dashboard": safe_qta_icon("ph.chart-line", color="#a78bfa"),
                 "Pedidos": safe_qta_icon("ph.notebook", color="#8ab4ff"),
                 "Produtos": safe_qta_icon("ph.cake", color="#a3e635"),
                 "Clientes": safe_qta_icon("ph.users", color="#fca5a5"),
@@ -10032,33 +9825,7 @@ class MainWindow(QMainWindow):
         # Header
         self.header = QWidget(); self.header.setObjectName("Header")
         header_l = QHBoxLayout(self.header)
-        
-        # Logo da empresa (se configurada)
-        self.header_logo_label = None  # Referência para atualização dinâmica
-        try:
-            company_data = self.db.query("SELECT name, logo_path FROM company WHERE id=1")
-            if company_data and company_data[0]["logo_path"]:
-                logo_path = company_data[0]["logo_path"]
-                if os.path.exists(logo_path):
-                    from PyQt6.QtGui import QPixmap
-                    self.header_logo_label = QLabel()
-                    pixmap = QPixmap(logo_path)
-                    if not pixmap.isNull():
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                        self.header_logo_label.setFixedSize(48, 48)
-                        self.header_logo_label.setStyleSheet("padding: 4px; margin-right: 12px;")
-                        header_l.addWidget(self.header_logo_label)
-        except Exception as e:
-            print(f"Erro ao carregar logo da empresa: {e}")
-        
-        # Título (usar nome da empresa se configurado)
-        try:
-            company_data = self.db.query("SELECT name FROM company WHERE id=1")
-            company_name = company_data[0]["name"] if company_data else "Confeitaria"
-        except Exception:
-            company_name = "Confeitaria"
-        
-        self.title_label = QLabel(company_name)
+        self.title_label = QLabel("Confeitaria Marilia Zylbersztajn")
         header_l.addWidget(self.title_label)
         header_l.addStretch(1)
         
@@ -10106,12 +9873,22 @@ class MainWindow(QMainWindow):
         right_v.addWidget(self.header)
 
         # Pages
+        # Dashboard: usar sua implementação se existir; senão, fallback simples
+        try:
+            from ui.dashboard import Dashboard
+            self.page_dashboard: QWidget = Dashboard(self.db)
+            dashboard_refresh_cb: Optional[Callable[[], None]] = getattr(self.page_dashboard, "refresh", None)
+        except Exception:
+            class _Dash(QWidget):
+                def __init__(self, db: DB) -> None:
+                    super().__init__()
+                    v = QVBoxLayout(self); v.addWidget(QLabel("Dashboard (fallback)"))
+                def refresh(self) -> None:
+                    pass
+            self.page_dashboard = _Dash(self.db)
+            dashboard_refresh_cb = getattr(self.page_dashboard, "refresh", None)
+
         self.pages: QStackedWidget = QStackedWidget()
-        
-        # Dashboard com gráficos
-        self.page_dashboard: DashboardPage = DashboardPage(self.db, toast_cb=self.show_toast)
-        dashboard_refresh_cb: Optional[Callable[[], None]] = self.page_dashboard.refresh
-        
         self.page_orders: OrdersPage = OrdersPage(self.db, toast_cb=self.show_toast, dashboard_cb=dashboard_refresh_cb)
         self.page_products: ProductsPage = ProductsPage(self.db, toast_cb=self.show_toast)
         self.page_customers: CustomersPage = CustomersPage(self.db, toast_cb=self.show_toast)
@@ -10122,10 +9899,10 @@ class MainWindow(QMainWindow):
         # Nova página: Pronta entrega (estoque disponível)
         self.page_ready: ReadyStockPage = ReadyStockPage(self.db, toast_cb=self.show_toast)
         self.page_reports: ReportsPage = ReportsPage(self.db)
-        self.page_settings: SettingsPage = SettingsPage(self.db, cast(QApplication, QApplication.instance()), self, toast_cb=self.show_toast)
+        self.page_settings: SettingsPage = SettingsPage(cast(QApplication, QApplication.instance()), self, toast_cb=self.show_toast)
 
-        # Ordem deve bater com 'labels' da sidebar: Dashboard, Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
-        self.pages.addWidget(self.page_dashboard)
+        # Dashboard carregado, mas não adicionado ao QStackedWidget para ocultar a aba
+        # Ordem deve bater com 'labels' da sidebar: Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
         self.pages.addWidget(self.page_customers)
         self.pages.addWidget(self.page_ready)
         self.pages.addWidget(self.page_production)
@@ -10146,57 +9923,19 @@ class MainWindow(QMainWindow):
         self.sidebar.setCurrentRow(0)
         self._setup_menu()
         
+        # Iniciar verificação de licença APÓS tudo estar configurado
+        print("\n" + "="*60)
+        print("🔍 AGENDANDO VERIFICAÇÃO DE LICENÇA EM 1 SEGUNDO...")
+        print("="*60 + "\n")
+        
+        # Teste: chamar diretamente primeiro para ver se funciona
+        def test_call():
+            print("⏰ TIMER DISPARADO! Chamando _update_license_status...")
+            self._update_license_status()
+        
+        QTimer.singleShot(1000, test_call)
 
     # ------------ Helpers ------------
-    def _update_window_title(self) -> None:
-        """Atualiza o título da janela com o nome da empresa do banco"""
-        try:
-            company_data = self.db.query("SELECT name FROM company WHERE id=1")
-            if company_data:
-                company_name = company_data[0]["name"]
-                self.setWindowTitle(company_name)
-                # Atualizar também o título no cabeçalho
-                if hasattr(self, 'title_label'):
-                    self.title_label.setText(company_name)
-            else:
-                self.setWindowTitle("Confeitaria")
-        except Exception:
-            self.setWindowTitle("Confeitaria")
-    
-    def _update_header_logo(self, logo_path: str | None = None) -> None:
-        """Atualiza o logo no cabeçalho da janela"""
-        try:
-            from PyQt6.QtGui import QPixmap
-            
-            # Se logo_path não foi fornecido, buscar do banco
-            if logo_path is None:
-                company_data = self.db.query("SELECT logo_path FROM company WHERE id=1")
-                if company_data:
-                    logo_path = company_data[0]["logo_path"]
-            
-            # Se tem logo e arquivo existe
-            if logo_path and os.path.exists(logo_path):
-                pixmap = QPixmap(logo_path)
-                if not pixmap.isNull():
-                    # Se já existe o label, apenas atualizar a imagem
-                    if self.header_logo_label:
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                        self.header_logo_label.show()
-                    else:
-                        # Criar novo label
-                        self.header_logo_label = QLabel()
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                        self.header_logo_label.setFixedSize(48, 48)
-                        self.header_logo_label.setStyleSheet("padding: 4px; margin-right: 12px;")
-                        # Inserir no início do header
-                        self.header.layout().insertWidget(0, self.header_logo_label)
-            else:
-                # Sem logo - esconder se existir
-                if self.header_logo_label:
-                    self.header_logo_label.hide()
-        except Exception as e:
-            print(f"Erro ao atualizar logo do cabeçalho: {e}")
-    
     def _setup_window_icon(self) -> None:
         """Configura o ícone da janela principal do aplicativo."""
         try:
@@ -10228,14 +9967,97 @@ class MainWindow(QMainWindow):
     def show_toast(self, text: str) -> None:
         t = Toast(self, text)
         t.show_near_bottom_right()
+    
+    def _update_license_status(self) -> None:
+        """Atualiza o rodapé com o status da licença em background"""
+        print("\n" + "="*70)
+        print("[MainWindow] ===== _update_license_status CHAMADO =====")
+        print("="*70 + "\n")
+        
+        try:
+            print("[MainWindow] 1. Tentando importar check_license_status...")
+            from core.updater import check_license_status
+            print("[MainWindow] 2. ✅ Import OK!")
+            
+            print("[MainWindow] 3. Executando check_license_status() DIRETAMENTE (sem thread)...")
+            status_code, message = check_license_status()
+            print(f"[MainWindow] 4. ✅ Status obtido: {status_code} - {message}")
+            
+            print("[MainWindow] 5. Chamando _set_license_status()...")
+            self._set_license_status(status_code, message)
+            print("[MainWindow] 6. ✅ CONCLUÍDO!")
+            
+        except Exception as e:
+            print(f"\n[MainWindow] ❌ ERRO CRÍTICO: {e}\n")
+            import traceback
+            traceback.print_exc()
+            # Tenta definir status de erro manualmente
+            try:
+                print("[MainWindow] Tentando definir status de erro manualmente...")
+                self._set_license_status(4, "Erro ao verificar licença")
+            except Exception as e2:
+                print(f"[MainWindow] Erro ao definir status manualmente: {e2}")
+    
+    def _set_license_status(self, status_code: int, message: str) -> None:
+        """Define o status da licença no rodapé (executado na thread principal)"""
+        try:
+            print(f"[MainWindow] _set_license_status chamado: {status_code} - {message}")
+            
+            # Emojis e cores por status
+            status_icons = {
+                1: "✅",  # Licença em dia
+                2: "⏳",  # Licença pendente
+                3: "❌",  # Licença inadimplente
+                4: "🌐"   # Erro de rede
+            }
+            
+            status_colors = {
+                1: "#10b981",  # Verde
+                2: "#f59e0b",  # Amarelo
+                3: "#ef4444",  # Vermelho
+                4: "#6b7280"   # Cinza
+            }
+            
+            icon = status_icons.get(status_code, "❓")
+            color = status_colors.get(status_code, "#888")
+            
+            # Atualiza o texto do rodapé
+            footer_text = f"© 2025 DWM System Developer. Todos os direitos reservados. | {icon} {message}"
+            self.footer.setText(footer_text)
+            print(f"[MainWindow] Footer text atualizado: {footer_text}")
+            
+            # Atualiza a cor do ícone de status
+            style = f"color: {color if status_code != 1 else '#888'}; font-size: 12px; margin-top: 8px;"
+            
+            # Se status não for "em dia", destaca a mensagem
+            if status_code != 1:
+                style = f"color: {color}; font-size: 12px; margin-top: 8px; font-weight: bold;"
+            
+            self.footer.setStyleSheet(style)
+            print(f"[MainWindow] Footer style atualizado: {style}")
+            
+            # Tooltip com mais informações
+            tooltips = {
+                1: "Licença válida e funcionando corretamente",
+                2: "Token GitHub não configurado. Configure em Configurações → Atualização.",
+                3: "Token inválido ou sem permissão. Verifique o token em Configurações.",
+                4: "Sem conexão com internet. Verifique sua conexão de rede."
+            }
+            self.footer.setToolTip(tooltips.get(status_code, message))
+            print(f"[MainWindow] Footer configurado com sucesso!")
+            
+        except Exception as e:
+            print(f"[MainWindow] Erro ao configurar footer: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _seed(self) -> None:
         # Insere alguns dados de exemplo se estiver vazio
         if not self.db.query("SELECT 1 FROM products LIMIT 1"):
-            self.db.execute("INSERT INTO products(name, description, stock, min_stock, price) VALUES (?,?,?,?,?)",
-                            ("Bolo de Chocolate", "Com cobertura de ganache", 20, 3, 85.00))
-            self.db.execute("INSERT INTO products(name, description, stock, min_stock, price) VALUES (?,?,?,?,?)",
-                            ("Cheesecake", "Frutas vermelhas", 10, 2, 65.00))
+            self.db.execute("INSERT INTO products(name, description, stock, min_stock) VALUES (?,?,?,?)",
+                            ("Bolo de Chocolate", "Com cobertura de ganache", 20, 3))
+            self.db.execute("INSERT INTO products(name, description, stock, min_stock) VALUES (?,?,?,?)",
+                            ("Cheesecake", "Frutas vermelhas", 10, 2))
         if not self.db.query("SELECT 1 FROM customers LIMIT 1"):
             self.db.execute("INSERT INTO customers(name, phone, address) VALUES (?,?,?)",
                             ("Maria Oliveira", "(11) 99999-1111", "Rua A, 123"))
@@ -11620,300 +11442,6 @@ QDialog QPushButton:hover, QMessageBox QPushButton:hover { background-color: #db
 #Toast { background: rgba(255,255,255,0.95); color: #1f2937; border: 1px solid #e5e7eb; }
 """
 
-def qss_pink() -> str:
-    """Tema Rosa - estilo romântico e suave"""
-    return """
-* { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
-QMainWindow { background: #fdf2f8; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #fce7f3, stop:1 #fbcfe8); border-bottom: 1px solid #f9a8d4; }
-#AppTitle { color: #831843; font-size: 20px; font-weight: 600; }
-QLabel#subtitle { color: #9f1239; }
-QLabel { color: #1f2937; }
-
-QListWidget#Sidebar { background: #fce7f3; color: #831843; border-right: 1px solid #f9a8d4; }
-QListWidget#Sidebar::item { padding: 12px; margin: 6px; border-radius: 10px; }
-QListWidget#Sidebar::item:selected { background: #f9a8d4; color: #831843; }
-QListWidget#Sidebar::item:hover { background: #fbcfe8; }
-
-QWidget#RightArea { background: #ffffff; }
-QWidget#RightArea QWidget { background: transparent; }
-QWidget#RightArea QScrollBar:vertical { background: #ffffff; }
-QWidget#RightArea QScrollBar::groove:vertical { background: #ffffff; }
-
-QPushButton { 
-    background: #fbcfe8; 
-    color: #831843; 
-    padding: 8px 14px; 
-    border: 1px solid #f9a8d4 !important; 
-    border-radius: 10px; 
-}
-QPushButton:hover { 
-    background: #f9a8d4; 
-    border: 1px solid #f472b6 !important; 
-}
-QPushButton:pressed { 
-    background: #f472b6; 
-    border: 1px solid #ec4899 !important; 
-}
-
-QPushButton#IconButton {
-    padding: 0px;
-    min-width: 28px; max-width: 28px;
-    min-height: 28px; max-height: 28px;
-    border-radius: 14px;
-    background: #fbcfe8;
-    border: 1px solid #f9a8d4 !important;
-}
-QPushButton#IconButton:hover { 
-    background: #f9a8d4; 
-    border: 1px solid #f472b6 !important; 
-}
-QPushButton#IconButton:pressed { 
-    background: #f472b6; 
-    border: 1px solid #ec4899 !important; 
-}
-
-QTableWidget { 
-    background: #ffffff; 
-    alternate-background-color: #fdf2f8; 
-    color: #111827; 
-    gridline-color: #fbcfe8; 
-    border: 1px solid #f9a8d4;
-    border-radius: 4px;
-}
-QTableWidget::item { padding: 8px; color: #111827; }
-QTableWidget::item:selected { background: #fbcfe8; color: #831843; }
-QTableWidget::item:hover { background: #fce7f3; }
-QHeaderView::section { background: #fce7f3; color: #831843; padding: 6px; border: none; }
-QTableCornerButton::section { background: #fce7f3; border: 1px solid #f9a8d4; }
-
-QScrollBar:vertical { background: #ffffff; width: 12px; margin: 0px; border: none; }
-QScrollBar::groove:vertical { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:vertical { background: #f9a8d4; min-height: 24px; border-radius: 6px; }
-QScrollBar::handle:vertical:hover { background: #f472b6; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background: none; height: 0px; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: #ffffff; }
-
-QScrollBar:horizontal { background: #ffffff; height: 12px; margin: 0px; border: none; }
-QScrollBar::groove:horizontal { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:horizontal { background: #f9a8d4; min-width: 24px; border-radius: 6px; }
-QScrollBar::handle:horizontal:hover { background: #f472b6; }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { background: none; width: 0px; }
-QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: #ffffff; }
-
-QListWidget#Sidebar QScrollBar:vertical { background: #fce7f3; width: 10px; margin: 0px; border: none; }
-QListWidget#Sidebar QScrollBar::groove:vertical { background: #fce7f3; border: none; }
-QListWidget#Sidebar QScrollBar::handle:vertical { background: #f9a8d4; border-radius: 6px; min-height: 24px; }
-QListWidget#Sidebar QScrollBar::handle:vertical:hover { background: #f472b6; }
-
-QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
-    background: #ffffff; color: #111827; border: 1px solid #f9a8d4; border-radius: 8px; padding: 6px;
-    selection-background-color: #fbcfe8; selection-color: #831843;
-}
-
-QFrame#SettingsGroup {
-    background: #ffffff; border: 1px solid #f9a8d4; border-radius: 12px; padding: 16px; margin: 8px 0;
-}
-
-#Toast { background: rgba(252, 231, 243, 0.95); color: #831843; border: 1px solid #f9a8d4; }
-"""
-
-def qss_purple() -> str:
-    """Tema Roxo - estilo elegante e moderno"""
-    return """
-* { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
-QMainWindow { background: #faf5ff; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f3e8ff, stop:1 #e9d5ff); border-bottom: 1px solid #d8b4fe; }
-#AppTitle { color: #581c87; font-size: 20px; font-weight: 600; }
-QLabel#subtitle { color: #6b21a8; }
-QLabel { color: #1f2937; }
-
-QListWidget#Sidebar { background: #f3e8ff; color: #581c87; border-right: 1px solid #d8b4fe; }
-QListWidget#Sidebar::item { padding: 12px; margin: 6px; border-radius: 10px; }
-QListWidget#Sidebar::item:selected { background: #d8b4fe; color: #581c87; }
-QListWidget#Sidebar::item:hover { background: #e9d5ff; }
-
-QWidget#RightArea { background: #ffffff; }
-QWidget#RightArea QWidget { background: transparent; }
-QWidget#RightArea QScrollBar:vertical { background: #ffffff; }
-QWidget#RightArea QScrollBar::groove:vertical { background: #ffffff; }
-
-QPushButton { 
-    background: #e9d5ff; 
-    color: #581c87; 
-    padding: 8px 14px; 
-    border: 1px solid #d8b4fe !important; 
-    border-radius: 10px; 
-}
-QPushButton:hover { 
-    background: #d8b4fe; 
-    border: 1px solid #c084fc !important; 
-}
-QPushButton:pressed { 
-    background: #c084fc; 
-    border: 1px solid #a855f7 !important; 
-}
-
-QPushButton#IconButton {
-    padding: 0px;
-    min-width: 28px; max-width: 28px;
-    min-height: 28px; max-height: 28px;
-    border-radius: 14px;
-    background: #e9d5ff;
-    border: 1px solid #d8b4fe !important;
-}
-QPushButton#IconButton:hover { 
-    background: #d8b4fe; 
-    border: 1px solid #c084fc !important; 
-}
-QPushButton#IconButton:pressed { 
-    background: #c084fc; 
-    border: 1px solid #a855f7 !important; 
-}
-
-QTableWidget { 
-    background: #ffffff; 
-    alternate-background-color: #faf5ff; 
-    color: #111827; 
-    gridline-color: #e9d5ff; 
-    border: 1px solid #d8b4fe;
-    border-radius: 4px;
-}
-QTableWidget::item { padding: 8px; color: #111827; }
-QTableWidget::item:selected { background: #e9d5ff; color: #581c87; }
-QTableWidget::item:hover { background: #f3e8ff; }
-QHeaderView::section { background: #f3e8ff; color: #581c87; padding: 6px; border: none; }
-QTableCornerButton::section { background: #f3e8ff; border: 1px solid #d8b4fe; }
-
-QScrollBar:vertical { background: #ffffff; width: 12px; margin: 0px; border: none; }
-QScrollBar::groove:vertical { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:vertical { background: #d8b4fe; min-height: 24px; border-radius: 6px; }
-QScrollBar::handle:vertical:hover { background: #c084fc; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background: none; height: 0px; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: #ffffff; }
-
-QScrollBar:horizontal { background: #ffffff; height: 12px; margin: 0px; border: none; }
-QScrollBar::groove:horizontal { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:horizontal { background: #d8b4fe; min-width: 24px; border-radius: 6px; }
-QScrollBar::handle:horizontal:hover { background: #c084fc; }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { background: none; width: 0px; }
-QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: #ffffff; }
-
-QListWidget#Sidebar QScrollBar:vertical { background: #f3e8ff; width: 10px; margin: 0px; border: none; }
-QListWidget#Sidebar QScrollBar::groove:vertical { background: #f3e8ff; border: none; }
-QListWidget#Sidebar QScrollBar::handle:vertical { background: #d8b4fe; border-radius: 6px; min-height: 24px; }
-QListWidget#Sidebar QScrollBar::handle:vertical:hover { background: #c084fc; }
-
-QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
-    background: #ffffff; color: #111827; border: 1px solid #d8b4fe; border-radius: 8px; padding: 6px;
-    selection-background-color: #e9d5ff; selection-color: #581c87;
-}
-
-QFrame#SettingsGroup {
-    background: #ffffff; border: 1px solid #d8b4fe; border-radius: 12px; padding: 16px; margin: 8px 0;
-}
-
-#Toast { background: rgba(243, 232, 255, 0.95); color: #581c87; border: 1px solid #d8b4fe; }
-"""
-
-def qss_blue() -> str:
-    """Tema Azul - estilo profissional e confiável"""
-    return """
-* { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
-QMainWindow { background: #eff6ff; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #dbeafe, stop:1 #bfdbfe); border-bottom: 1px solid #93c5fd; }
-#AppTitle { color: #1e3a8a; font-size: 20px; font-weight: 600; }
-QLabel#subtitle { color: #1e40af; }
-QLabel { color: #1f2937; }
-
-QListWidget#Sidebar { background: #dbeafe; color: #1e3a8a; border-right: 1px solid #93c5fd; }
-QListWidget#Sidebar::item { padding: 12px; margin: 6px; border-radius: 10px; }
-QListWidget#Sidebar::item:selected { background: #93c5fd; color: #1e3a8a; }
-QListWidget#Sidebar::item:hover { background: #bfdbfe; }
-
-QWidget#RightArea { background: #ffffff; }
-QWidget#RightArea QWidget { background: transparent; }
-QWidget#RightArea QScrollBar:vertical { background: #ffffff; }
-QWidget#RightArea QScrollBar::groove:vertical { background: #ffffff; }
-
-QPushButton { 
-    background: #bfdbfe; 
-    color: #1e3a8a; 
-    padding: 8px 14px; 
-    border: 1px solid #93c5fd !important; 
-    border-radius: 10px; 
-}
-QPushButton:hover { 
-    background: #93c5fd; 
-    border: 1px solid #60a5fa !important; 
-}
-QPushButton:pressed { 
-    background: #60a5fa; 
-    border: 1px solid #3b82f6 !important; 
-}
-
-QPushButton#IconButton {
-    padding: 0px;
-    min-width: 28px; max-width: 28px;
-    min-height: 28px; max-height: 28px;
-    border-radius: 14px;
-    background: #bfdbfe;
-    border: 1px solid #93c5fd !important;
-}
-QPushButton#IconButton:hover { 
-    background: #93c5fd; 
-    border: 1px solid #60a5fa !important; 
-}
-QPushButton#IconButton:pressed { 
-    background: #60a5fa; 
-    border: 1px solid #3b82f6 !important; 
-}
-
-QTableWidget { 
-    background: #ffffff; 
-    alternate-background-color: #eff6ff; 
-    color: #111827; 
-    gridline-color: #bfdbfe; 
-    border: 1px solid #93c5fd;
-    border-radius: 4px;
-}
-QTableWidget::item { padding: 8px; color: #111827; }
-QTableWidget::item:selected { background: #bfdbfe; color: #1e3a8a; }
-QTableWidget::item:hover { background: #dbeafe; }
-QHeaderView::section { background: #dbeafe; color: #1e3a8a; padding: 6px; border: none; }
-QTableCornerButton::section { background: #dbeafe; border: 1px solid #93c5fd; }
-
-QScrollBar:vertical { background: #ffffff; width: 12px; margin: 0px; border: none; }
-QScrollBar::groove:vertical { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:vertical { background: #93c5fd; min-height: 24px; border-radius: 6px; }
-QScrollBar::handle:vertical:hover { background: #60a5fa; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { background: none; height: 0px; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: #ffffff; }
-
-QScrollBar:horizontal { background: #ffffff; height: 12px; margin: 0px; border: none; }
-QScrollBar::groove:horizontal { background: #ffffff; border: none; margin: 0px; border-radius: 6px; }
-QScrollBar::handle:horizontal { background: #93c5fd; min-width: 24px; border-radius: 6px; }
-QScrollBar::handle:horizontal:hover { background: #60a5fa; }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { background: none; width: 0px; }
-QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: #ffffff; }
-
-QListWidget#Sidebar QScrollBar:vertical { background: #dbeafe; width: 10px; margin: 0px; border: none; }
-QListWidget#Sidebar QScrollBar::groove:vertical { background: #dbeafe; border: none; }
-QListWidget#Sidebar QScrollBar::handle:vertical { background: #93c5fd; border-radius: 6px; min-height: 24px; }
-QListWidget#Sidebar QScrollBar::handle:vertical:hover { background: #60a5fa; }
-
-QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {
-    background: #ffffff; color: #111827; border: 1px solid #93c5fd; border-radius: 8px; padding: 6px;
-    selection-background-color: #bfdbfe; selection-color: #1e3a8a;
-}
-
-QFrame#SettingsGroup {
-    background: #ffffff; border: 1px solid #93c5fd; border-radius: 12px; padding: 16px; margin: 8px 0;
-}
-
-#Toast { background: rgba(219, 234, 254, 0.95); color: #1e3a8a; border: 1px solid #93c5fd; }
-"""
-
 # -----------------------------
 # App bootstrap
 # -----------------------------
@@ -11934,9 +11462,61 @@ def main() -> None:
             print(f"[AVISO] Nao foi possivel configurar UTF-8: {e}")
     
     # =====================================================================
+    # VERIFICAÇÃO DE LICENÇA ANTES DE TUDO
     # =====================================================================
-    # APLICAÇÃO LOCAL - SEM VALIDAÇÃO DE LICENÇA
+    
+    # Criar aplicação temporária apenas para dialogs de licença
+    temp_app = QApplication(sys.argv)
+    
+    # NOVO: Sempre baixar status.json atualizado ANTES de qualquer validação
+    print("[licenca] Baixando status.json mais recente do servidor...")
+    try:
+        # Forçar download fresh sem cache para garantir dados atualizados
+        fresh_data_text, fresh_etag = _http_get(LICENSE_RAW_URL, etag=None, timeout=15, cache_bust=True)
+        fresh_data = json.loads(fresh_data_text)
+        
+        # Debug: mostrar hash do conteúdo baixado para verificar se mudou
+        import hashlib
+        content_hash = hashlib.md5(fresh_data_text.encode()).hexdigest()[:8]
+        print(f"[licenca] 🔍 Hash do conteúdo baixado: {content_hash}")
+        
+        # Salvar imediatamente os dados atualizados
+        _save_cache(fresh_data_text, fresh_etag)
+        
+        if DEBUG_LICENSE:
+            if "clients" in fresh_data:
+                updated_at = fresh_data.get('updated_at', 'N/A')
+                print(f"[licenca] ✅ Status.json atualizado: {len(fresh_data['clients'])} clientes, atualizado em {updated_at}")
+                # Mostrar status de cada cliente
+                for i, client in enumerate(fresh_data['clients'], 1):
+                    token = client.get('license_token', 'N/A')
+                    status = client.get('status', 'N/A')
+                    valid_until = client.get('valid_until', 'N/A')
+                    cliente_nome = client.get('cliente', 'N/A')
+                    print(f"  Cliente {i}: {cliente_nome} | Token: {token} | Status: {status} | Válido até: {valid_until}")
+            else:
+                print(f"[licenca] ✅ Status.json atualizado: formato antigo")
+    except Exception as e:
+        print(f"[licenca] ⚠️ Aviso: Não foi possível baixar status.json atualizado: {e}")
+        print(f"[licenca] Continuando com cache local (se disponível)...")
+    
+    # 1) Primeira vez: pedir e validar o token (agora com dados atualizados)
+    expected_token = _prompt_token_once_and_validate(parent=None)
+
+    # 2) Validar ANTES de abrir a janela (dados já foram atualizados acima)
+    _check_license_or_exit(
+        parent=None,
+        expected_token=expected_token,
+        show_dialog=True,
+        force_online_at_start=False  # Não forçar novamente, já baixamos acima
+    )
+    
+    # Se chegou até aqui, a licença está válida
+    if DEBUG_LICENSE:
+        print(f"[licenca] ✅ Licença válida para token: {expected_token}")
+    
     # =====================================================================
+    # CONTINUA COM A APLICAÇÃO NORMAL
     # =====================================================================
     
     # Auth/Login (usará seus módulos se existirem)
@@ -11967,8 +11547,7 @@ def main() -> None:
         get_database_path = lambda: DB_PATH  # fallback
         print(f"⚠️ Erro ao carregar módulos: {ex}")
 
-    # Cria aplicação Qt
-    app = QApplication(sys.argv)
+    app = temp_app  # Reusa a aplicação criada para licença
     
     # Usa o caminho do banco configurado ou o padrão
     try:
@@ -12169,27 +11748,21 @@ def main() -> None:
 
     win = MainWindow(user)
     
+    # =====================================================================
+    # REVALIDAÇÃO PERIÓDICA DE LICENÇA
+    # =====================================================================
+    # Agenda revalidação a cada 60 segundos para monitorar status da licença
+    _recheck_and_maybe_close(win, expected_token=expected_token, interval_ms=60_000)
+    
     # Aplica tema inicial conforme configuração salva
     try:
         from core.config import load_config
         cfg = load_config()
-        # Carrega o tema salvo (padrão: light)
-        theme = cfg.get('theme', 'light')
+        # Padrão: dark (mantém comportamento anterior)
+        theme = 'dark' if cfg.get('theme', 'dark') == 'dark' else 'light'
     except Exception:
-        theme = 'light'
-    
-    # Aplica o QSS correspondente ao tema
-    if theme == 'dark':
-        base_qss = qss_dark()
-    elif theme == 'pink':
-        base_qss = qss_pink()
-    elif theme == 'purple':
-        base_qss = qss_purple()
-    elif theme == 'blue':
-        base_qss = qss_blue()
-    else:  # 'light' ou qualquer outro valor
-        base_qss = qss_light()
-    
+        theme = 'dark'
+    base_qss = qss_dark() if theme == 'dark' else qss_light()
     # Aplicar apenas o CSS base, sem concatenação adicional
     app.setStyleSheet(base_qss)
     win.show()
