@@ -126,12 +126,12 @@ except Exception:
             )""")
             self.conn.commit()
 
-        def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
             cur = self.conn.cursor()
             cur.execute(sql, params)
             return cur.fetchall()
 
-        def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
             cur = self.conn.cursor()
             cur.execute(sql, params)
             self.conn.commit()
@@ -292,7 +292,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
     
     try:
         # Verifica se é hash bcrypt (começa com $2a$, $2b$, $2y$)
-        is_bcrypt = isinstance(stored_hash, str) and stored_hash.startswith('$2')
+        is_bcrypt = stored_hash.startswith('$2')
         
         if bcrypt and is_bcrypt:
             # Verifica com bcrypt
@@ -1233,7 +1233,7 @@ class MultiProductOrderDialog(QDialog):
         from core.config import load_config
         
         self.db = db
-        self.products_list: list[dict] = []  # Lista de produtos adicionados
+        self.products_list: list[dict[str, Any]] = []  # Lista de produtos adicionados
         
         self.setWindowTitle("Novo Pedido - Múltiplos Produtos")
         self.resize(800, 600)
@@ -1619,7 +1619,7 @@ class MultiProductOrderDialog(QDialog):
         # Aceita e salva
         self.accept()
     
-    def get_order_data(self) -> dict:
+    def get_order_data(self) -> dict[str, Any]:
         """Retorna os dados do pedido completo"""
         return {
             "customer_id": self.customer.currentData(),
@@ -9931,6 +9931,10 @@ class MainWindow(QMainWindow):
         from core.config import get_database_path
         current_db_path = get_database_path()
         
+        # Garante que o diretório existe
+        db_dir = os.path.dirname(current_db_path)
+        os.makedirs(db_dir, exist_ok=True)
+        
         # LOG IMPORTANTE: Mostrar qual banco está sendo usado
         if current_db_path.startswith('\\\\'):
             print("=" * 80)
@@ -9940,7 +9944,38 @@ class MainWindow(QMainWindow):
         else:
             print(f"📂 Usando banco de dados: {current_db_path}")
         
-        self.db = ExtendedDatabase(current_db_path)
+        try:
+            self.db = ExtendedDatabase(current_db_path)
+        except Exception as e:
+            print(f"❌ Erro ao abrir banco de dados: {e}")
+            print(f"🔧 Tentando reparar ou criar novo banco...")
+            
+            # Se o banco está corrompido, tenta reparar
+            if os.path.exists(current_db_path):
+                try:
+                    from core.database import Database
+                    temp_db = Database(current_db_path)
+                    success, msg = temp_db.repair_database()
+                    if success:
+                        print(f"✅ Banco reparado: {msg}")
+                        self.db = ExtendedDatabase(current_db_path)
+                    else:
+                        raise Exception(f"Falha no reparo: {msg}")
+                except Exception as repair_error:
+                    print(f"❌ Não foi possível reparar: {repair_error}")
+                    # Remove o banco corrompido e cria um novo
+                    backup_path = current_db_path + f".corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    try:
+                        os.rename(current_db_path, backup_path)
+                        print(f"💾 Banco corrompido salvo em: {backup_path}")
+                    except:
+                        pass
+                    print(f"🆕 Criando novo banco de dados...")
+                    self.db = ExtendedDatabase(current_db_path)
+            else:
+                # Banco não existe, cria novo
+                print(f"🆕 Criando novo banco de dados...")
+                self.db = ExtendedDatabase(current_db_path)
         # Adicionar atributos para controle de visibilidade 
         setattr(self.db, 'current_role', 'common')  # valor padrão
         setattr(self.db, 'current_user', 'unknown')  # valor padrão

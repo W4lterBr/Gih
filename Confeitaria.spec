@@ -1,18 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Confeitaria - Build Spec v1.12.0
+# Confeitaria - Build Spec v1.12.1
 # Atualizado: 2025-12-03
-# DASHBOARD + PREÇOS + LOGIN INTELIGENTE + PERSONALIZAÇÃO
+# CORREÇÕES DE BACKUP + REPARO DE BANCO
 # =======================================
-# 📊 Dashboard completo com estatísticas e gráficos em tempo real
+# 🔧 Sistema de reparo de banco corrompido
+# 🔄 Correção na restauração de backups ZIP
+# 📁 Explorador do Windows nativo
+# ✅ Consolidação automática de WAL
+# 📊 Dashboard completo com estatísticas
 # 💰 Sistema de preços com formatação monetária brasileira
-# 🔐 Login com memorização de credenciais (Base64)
-# 🏢 Configurações de empresa (nome + logo)
-# 🎨 Interface otimizada e responsiva
-# ✅ Atualização COMPLETA via GitHub (código + interface + recursos)
+# 🔐 Login com memorização de credenciais
+# 🎨 5 temas disponíveis (Escuro, Claro, Rosa, Roxo, Azul)
+# ✅ Sistema de atualização remota via GitHub
 # ✅ Token GitHub em texto simples (github_token.txt)
-# ✅ Status de licença no rodapé (Em dia / Pendente / Inadimplente / Sem internet)
-# ✅ Sistema de LOGS completo em AppData\Local\Confeitaria\logs\
-# ✅ Logs por dia com todas operações (inicialização, banco, login, atualizações)
 # ✅ Preserva banco de dados, configurações, backups e logs
 # ✅ Atualizações de ~500KB vs ~200MB do instalador
 # ✅ Clientes atualizam com 1 clique em Configurações
