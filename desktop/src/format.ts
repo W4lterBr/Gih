@@ -51,10 +51,15 @@ export const somarDias = (iso: string, dias: number) => {
   const [a, m, d] = iso.split("-").map(Number);
   return isoLocal(new Date(a, m - 1, d + dias));
 };
-export const ehSegunda = (iso: string) => {
+/** Nomes na numeração do motor (0 = segunda … 6 = domingo). */
+export const NOMES_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"];
+/** Dia da semana de uma data AAAA-MM-DD na numeração do motor. */
+export const diaSemana = (iso: string) => {
   const [a, m, d] = iso.split("-").map(Number);
-  return new Date(a, m - 1, d).getDay() === 1;
+  return (new Date(a, m - 1, d).getDay() + 6) % 7;
 };
+/** A data cai num dia sem expediente da confeitaria? */
+export const diaFechado = (iso: string, fechados: number[] | undefined) => !!iso && (fechados ?? []).includes(diaSemana(iso));
 
 /** Texto preto ou branco conforme a luminância do fundo (etiquetas). */
 export function corTexto(hex: string | null | undefined) {

@@ -5,12 +5,19 @@ Permite acesso via rede local para atualização de estoque de produtos
 """
 
 from flask import Flask, jsonify, request, send_from_directory, g
-from flask_cors import CORS
 import sqlite3
 import os
 import logging
+import threading
+import time
+from datetime import datetime
 from pathlib import Path
 import socket
+
+# PIN errado repetido (força bruta pela rede): depois de MAX_FALHAS_PIN tentativas
+# erradas o aparelho fica BLOQUEIO_PIN_S segundos sem conseguir tentar de novo.
+MAX_FALHAS_PIN = 8
+BLOQUEIO_PIN_S = 300
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +45,10 @@ class WebServer:
         self.port = port
         self.access_token = access_token
         self.app = Flask(__name__)
-        CORS(self.app)  # Permite requisições de qualquer origem
+        # Sem CORS: as páginas do painel são servidas por este mesmo servidor, então
+        # nenhum outro site precisa (nem deve) chamar esta API pelo navegador.
+        self._falhas_pin: dict = {}  # ip -> [falhas, bloqueado_ate]
+        self._trava_pin = threading.Lock()
 
         # Configurar rotas
         self._setup_routes()
@@ -54,6 +64,10 @@ class WebServer:
         (antes disso, várias rotas vazavam a conexão nesses caminhos de erro).
         """
         if 'db_conn' not in g:
+            # sqlite3.connect criaria um arquivo vazio no lugar de um banco que sumiu;
+            # o motor trata o banco ausente perguntando ao usuário, o painel só recusa.
+            if not os.path.isfile(self.db_path):
+                raise RuntimeError(f"Banco de dados não encontrado: {self.db_path}")
             g.db_conn = sqlite3.connect(self.db_path)
         return g.db_conn
 
@@ -64,8 +78,28 @@ class WebServer:
             if conn is not None:
                 conn.close()
 
+    def _registrar_movimento(self, cursor, product_id, delta, category, reason, order_id=None):
+        """Toda mudança de estoque feita pelo painel vira movimentação (aparece na tela
+        Movimentação e nos relatórios) e entra no histórico do produto."""
+        if not delta:
+            return
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (product_id, 'entrada' if delta > 0 else 'saida', category, abs(delta), reason, order_id, now, 'painel-web'),
+        )
+        try:
+            cursor.execute(
+                "INSERT INTO audit_logs(entity, entity_id, action, user, details, created_at) VALUES (?,?,?,?,?,?)",
+                ('product', product_id, 'update', 'painel-web', f"stock: {'+' if delta > 0 else ''}{delta} ({reason})", now),
+            )
+        except sqlite3.Error:
+            pass  # banco sem tabela de auditoria: a movimentação já registra o essencial
+
     def _setup_auth(self):
-        """Exige o PIN de acesso (header X-Panel-Token ou ?token=) em toda a API"""
+        """Exige o PIN de acesso (cabeçalho X-Panel-Token) em toda a API.
+        Só o cabeçalho: PIN na URL ficaria em histórico do navegador e em logs."""
         if not self.access_token:
             return
 
@@ -73,9 +107,23 @@ class WebServer:
         def check_token():
             if not request.path.startswith('/api/'):
                 return None  # páginas/estáticos ficam livres, só a API é protegida
-            supplied = request.headers.get('X-Panel-Token') or request.args.get('token')
-            if supplied != self.access_token:
-                return jsonify({'success': False, 'error': 'PIN de acesso inválido ou ausente'}), 401
+            ip = request.remote_addr or '?'
+            agora = time.time()
+            fornecido = request.headers.get('X-Panel-Token') or ''
+            with self._trava_pin:
+                falhas, ate, ultimo = self._falhas_pin.get(ip, (0, 0.0, None))
+                if ate > agora:
+                    return jsonify({'success': False,
+                                    'error': f'Muitas tentativas com PIN errado. Aguarde {int(ate - agora) + 1}s.'}), 429
+                if fornecido != self.access_token:
+                    # Só conta PIN diferente do último errado: a atualização automática da
+                    # página repete o mesmo PIN salvo e não deve bloquear o aparelho.
+                    if fornecido and fornecido != ultimo:
+                        falhas += 1
+                        self._falhas_pin[ip] = ((0, agora + BLOQUEIO_PIN_S, None) if falhas >= MAX_FALHAS_PIN
+                                                else (falhas, 0.0, fornecido))
+                    return jsonify({'success': False, 'error': 'PIN de acesso inválido ou ausente'}), 401
+                self._falhas_pin.pop(ip, None)
             # Licença DWM bloqueada: o painel continua mostrando, mas não altera nada.
             if request.method not in ('GET', 'HEAD', 'OPTIONS') and self.somente_leitura and self.somente_leitura():
                 return jsonify({'success': False,
@@ -211,7 +259,9 @@ class WebServer:
         # API: Listar pedidos de produção
         @self.app.route('/api/production', methods=['GET'])
         def get_production():
-            """Retorna lista de produção (production_items + orders pendentes)"""
+            """Retorna a lista de produção (production_items). Pedidos entram na lista
+            pelo sistema ("Importar pedidos do dia"); a consulta direta a orders que
+            existia aqui filtrava status que o sistema não usa e nunca trazia nada."""
             try:
                 conn = self._get_conn()
                 conn.row_factory = sqlite3.Row
@@ -236,33 +286,6 @@ class WebServer:
                 
                 manual_items = cursor.fetchall()
                 
-                # 2. Busca pedidos pendentes/em produção (dos próximos 7 dias)
-                from datetime import datetime, timedelta
-                today = datetime.now().strftime("%Y-%m-%d")
-                week_later = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-                
-                cursor.execute("""
-                    SELECT 
-                        o.id,
-                        'order' as source,
-                        c.name as customer_name,
-                        p.name as product_name,
-                        p.size as product_size,
-                        o.quantity,
-                        o.delivery_date,
-                        o.status,
-                        o.notes
-                    FROM orders o
-                    LEFT JOIN customers c ON o.customer_id = c.id
-                    LEFT JOIN products p ON o.product_id = p.id
-                    WHERE o.status IN ('pending', 'in_production', 'Pendente', 'Em produção')
-                    AND DATE(o.delivery_date) BETWEEN ? AND ?
-                    ORDER BY o.delivery_date, c.name
-                """, (today, week_later))
-                
-                order_items = cursor.fetchall()
-                
-                # Combina ambos em uma lista
                 orders = []
                 
                 # Adiciona itens manuais
@@ -276,20 +299,6 @@ class WebServer:
                         'quantity': row['quantity'],
                         'delivery_date': '',
                         'status': 'pending',
-                        'notes': row['notes'] or ''
-                    })
-                
-                # Adiciona pedidos
-                for row in order_items:
-                    orders.append({
-                        'id': f"order_{row['id']}",  # Prefixo para diferenciar
-                        'source': 'order',
-                        'customer': row['customer_name'] or 'Cliente não especificado',
-                        'product': row['product_name'] or 'Produto não especificado',
-                        'size': row['product_size'] or '',
-                        'quantity': row['quantity'],
-                        'delivery_date': row['delivery_date'],
-                        'status': row['status'],
                         'notes': row['notes'] or ''
                     })
                 
@@ -333,23 +342,25 @@ class WebServer:
                 cursor = conn.cursor()
                 
                 # Verificar se o produto existe
-                cursor.execute("SELECT id, name FROM products WHERE id = ?", (product_id,))
+                cursor.execute("SELECT id, name, stock FROM products WHERE id = ?", (product_id,))
                 product = cursor.fetchone()
-                
+
                 if not product:
                     conn.close()
                     return jsonify({
                         'success': False,
                         'error': 'Produto não encontrado'
                     }), 404
-                
-                # Atualizar quantidade
+
+                # Atualizar quantidade (a diferença vira movimentação de ajuste)
                 cursor.execute("""
-                    UPDATE products 
+                    UPDATE products
                     SET stock = ?
                     WHERE id = ?
                 """, (quantity, product_id))
-                
+                self._registrar_movimento(cursor, product_id, quantity - (product[2] or 0),
+                                          'Ajuste de Inventário', 'Contagem no painel da cozinha')
+
                 conn.commit()
                 conn.close()
                 
@@ -374,199 +385,53 @@ class WebServer:
                     'error': str(e)
                 }), 500
         
-        # API: Atualizar item de produção (manual ou pedido)
+        # API: Atualizar item de produção
         @self.app.route('/api/production/<string:item_id>', methods=['PUT'])
         def update_production_item(item_id):
-            """Atualiza a quantidade, tamanho e/ou observações de um item de produção (manual ou pedido)"""
-            try:
-                from datetime import datetime
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                data = request.get_json()
+            """Atualiza quantidade, tamanho e/ou observações de um item da lista.
 
-                # "status" só existe para pedidos (tratado mais abaixo), mas precisa
-                # ser aceito aqui também - senão um PUT só com {"status": ...} era
-                # rejeitado com 400 mesmo sendo um caso de uso válido da API.
-                if not any(k in data for k in ('quantity', 'size', 'notes', 'status')):
+            Não mexe no estoque: a lista diz o que PRODUZIR, e o estoque só recebe as
+            quantidades em "Produção feita" (complete_production). Antes, editar a
+            quantidade já lançava a diferença no estoque e "Produção feita" somava a
+            quantidade inteira de novo (10 -> 12 virava +14 no estoque).
+            Pedidos não são editados por aqui: só pelo sistema."""
+            try:
+                data = request.get_json(silent=True) or {}
+                if not item_id.startswith('manual_'):
                     return jsonify({
                         'success': False,
-                        'error': 'Pelo menos um campo ("quantity", "size", "notes" ou "status") é obrigatório'
+                        'error': 'Só itens da lista de produção podem ser editados no painel. Pedidos são alterados no sistema.'
+                    }), 400
+                if not any(k in data for k in ('quantity', 'size', 'notes')):
+                    return jsonify({
+                        'success': False,
+                        'error': 'Pelo menos um campo ("quantity", "size" ou "notes") é obrigatório'
                     }), 400
 
+                real_id = int(item_id.replace('manual_', ''))
                 conn = self._get_conn()
                 cursor = conn.cursor()
+                cursor.execute("SELECT id FROM production_items WHERE id = ?", (real_id,))
+                if not cursor.fetchone():
+                    return jsonify({'success': False, 'error': 'Item não encontrado'}), 404
 
-                # Verificar se é item manual ou pedido
-                if item_id.startswith('manual_'):
-                    # Item da lista manual
-                    real_id = int(item_id.replace('manual_', ''))
-                    cursor.execute("SELECT id, product_id, quantity FROM production_items WHERE id = ?", (real_id,))
-                    item = cursor.fetchone()
-                    
-                    if not item:
-                        conn.close()
-                        return jsonify({
-                            'success': False,
-                            'error': 'Item não encontrado'
-                        }), 404
+                updates, params = [], []
+                if 'quantity' in data:
+                    new_quantity = int(data['quantity'])
+                    if new_quantity <= 0:
+                        return jsonify({'success': False, 'error': 'Quantidade deve ser maior que zero'}), 400
+                    updates.append("quantity = ?")
+                    params.append(new_quantity)
+                if 'size' in data:
+                    updates.append("size = ?")
+                    params.append(str(data['size']).strip())
+                if 'notes' in data:
+                    updates.append("notes = ?")
+                    params.append(str(data['notes']).strip())
 
-                    if not any(k in data for k in ('quantity', 'size', 'notes')):
-                        # "status" não existe para itens manuais (só para pedidos)
-                        conn.close()
-                        return jsonify({
-                            'success': False,
-                            'error': '"status" não se aplica a itens manuais da lista de produção'
-                        }), 400
-
-                    old_quantity = item[2]
-                    product_id = item[1]
-
-                    # Preparar campos para atualizar
-                    updates = []
-                    params = []
-                    new_quantity = old_quantity
-                    
-                    if 'quantity' in data:
-                        new_quantity = int(data['quantity'])
-                        if new_quantity <= 0:
-                            conn.close()
-                            return jsonify({
-                                'success': False,
-                                'error': 'Quantidade deve ser maior que zero'
-                            }), 400
-                        updates.append("quantity = ?")
-                        params.append(new_quantity)
-                        
-                        # Atualiza o estoque do produto com a diferença
-                        quantity_change = new_quantity - old_quantity
-                        if quantity_change != 0:
-                            cursor.execute(
-                                "UPDATE products SET stock = stock + ? WHERE id = ?",
-                                (quantity_change, product_id)
-                            )
-                            # Registra em stock_movements para aparecer na tela de
-                            # Movimentação do desktop (antes esse ajuste feito pelo
-                            # painel web não deixava rastro nenhum, só o desktop tinha
-                            # esse registro)
-                            mov_type = 'entrada' if quantity_change > 0 else 'saida'
-                            cursor.execute(
-                                "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
-                                "VALUES (?,?,?,?,?,?,?,?)",
-                                (product_id, mov_type, 'Produção', abs(quantity_change),
-                                 'Ajuste na lista de produção (painel web)', None, now, 'painel-web')
-                            )
-                            print(f"📦 Estoque atualizado: produto #{product_id} {quantity_change:+d} → nova qtd produzida: {new_quantity}")
-                    
-                    if 'size' in data:
-                        size = str(data['size']).strip()
-                        updates.append("size = ?")
-                        params.append(size)
-                    
-                    if 'notes' in data:
-                        notes = str(data['notes']).strip()
-                        updates.append("notes = ?")
-                        params.append(notes)
-                    
-                    if updates:
-                        params.append(real_id)
-                        sql = f"UPDATE production_items SET {', '.join(updates)} WHERE id = ?"
-                        cursor.execute(sql, params)
-                    
-                    conn.commit()
-                    conn.close()
-                    
-                    print(f"✅ Item manual #{real_id} atualizado")
-                    
-                elif item_id.startswith('order_'):
-                    # Pedido da tabela orders
-                    real_id = int(item_id.replace('order_', ''))
-                    cursor.execute("SELECT id, product_id, quantity, stock_reserved FROM orders WHERE id = ?", (real_id,))
-                    order = cursor.fetchone()
-
-                    if not order:
-                        conn.close()
-                        return jsonify({
-                            'success': False,
-                            'error': 'Pedido não encontrado'
-                        }), 404
-
-                    old_quantity = order[2]
-                    order_product_id = order[1]
-                    was_reserved = int(order[3] or 0) == 1
-
-                    # Atualizar campos
-                    updates = []
-                    params = []
-
-                    if 'quantity' in data:
-                        quantity = int(data['quantity'])
-                        if quantity <= 0:
-                            conn.close()
-                            return jsonify({
-                                'success': False,
-                                'error': 'Quantidade deve ser maior que zero'
-                            }), 400
-                        updates.append("quantity = ?")
-                        params.append(quantity)
-
-                        # Só ajusta estoque se esse pedido já teve estoque reservado -
-                        # mesma regra do desktop (OrdersPage.edit()). Antes esta rota do
-                        # painel web nunca tocava em products.stock, então editar a
-                        # quantidade de um pedido já reservado pelo celular desincronizava
-                        # o estoque real do sistema permanentemente.
-                        quantity_change = quantity - old_quantity
-                        if was_reserved and quantity_change != 0 and order_product_id:
-                            cursor.execute(
-                                "UPDATE products SET stock = stock - ? WHERE id = ?",
-                                (quantity_change, order_product_id)
-                            )
-                            mov_type = 'saida' if quantity_change > 0 else 'entrada'
-                            cursor.execute(
-                                "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
-                                "VALUES (?,?,?,?,?,?,?,?)",
-                                (order_product_id, mov_type, 'Ajuste de Inventário', abs(quantity_change),
-                                 'Ajuste pedido (painel web)', real_id, now, 'painel-web')
-                            )
-
-                    if 'size' in data:
-                        size = str(data['size']).strip()
-                        updates.append("size = ?")
-                        params.append(size)
-                    
-                    if 'notes' in data:
-                        notes = str(data['notes']).strip()
-                        updates.append("notes = ?")
-                        params.append(notes)
-                    
-                    if 'status' in data:
-                        valid_statuses = ['pending', 'in_production', 'completed', 'cancelled', 'Pendente', 'Em produção', 'Concluído', 'Cancelado']
-                        if data['status'] in valid_statuses:
-                            updates.append("status = ?")
-                            params.append(data['status'])
-
-                    if not updates:
-                        # Sem isso, um status inválido (o único campo enviado) deixava
-                        # "updates" vazio e gerava "UPDATE orders SET  WHERE id=?"
-                        # (SQL inválido) em vez de um erro 400 claro
-                        conn.close()
-                        return jsonify({
-                            'success': False,
-                            'error': 'Nenhum campo válido para atualizar (verifique o valor de "status")'
-                        }), 400
-
-                    params.append(real_id)
-                    sql = f"UPDATE orders SET {', '.join(updates)} WHERE id = ?"
-
-                    cursor.execute(sql, params)
-                    conn.commit()
-                    conn.close()
-                    
-                    print(f"✅ Pedido #{real_id} atualizado")
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': 'ID de item inválido'
-                    }), 400
-                
+                params.append(real_id)
+                cursor.execute(f"UPDATE production_items SET {', '.join(updates)} WHERE id = ?", params)
+                conn.commit()
                 return jsonify({
                     'success': True,
                     'message': 'Item atualizado com sucesso',
@@ -805,8 +670,7 @@ class WebServer:
                     """, (product_id, quantity, now))
                     
                     total_items += quantity
-                    print(f"✅ Produção concluída: {product_name} +{quantity} un → Estoque atualizado")
-                
+
                 # 3. Limpar lista de produção
                 cursor.execute("DELETE FROM production_items")
                 
@@ -867,14 +731,16 @@ class WebServer:
                     }), 404
                 
                 new_quantity = max(0, product[2] + change)  # Não permite negativo
-                
-                # Atualizar quantidade
+
+                # Atualizar quantidade (a diferença real vira movimentação de ajuste)
                 cursor.execute("""
-                    UPDATE products 
+                    UPDATE products
                     SET stock = ?
                     WHERE id = ?
                 """, (new_quantity, product_id))
-                
+                self._registrar_movimento(cursor, product_id, new_quantity - product[2],
+                                          'Ajuste de Inventário', 'Ajuste no painel da cozinha (+/−)')
+
                 conn.commit()
                 conn.close()
                 

@@ -54,6 +54,7 @@ Detalhes da interface, da arquitetura e da licença DWM em [desktop/README.md](d
 py tests\test_servico_local.py C:\Temp\copia.db    # todas as rotas do motor
 py tests\test_licenca.py                           # licença DWM (servidor falso)
 py tests\test_licenca_motor.py C:\Temp\copia.db    # somente leitura de ponta a ponta
+py tests\test_correcoes.py                         # correções da análise (cria o próprio banco temporário)
 ```
 
 ## Instalador

@@ -126,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, resposta if resposta is not None else {"ok": True})
         except ErroApi as e:
             self._json(e.status, {"erro": e.mensagem, "codigo": e.codigo})
+        except contexto.BancoAusente as e:
+            self._json(503, {"erro": f"Banco de dados não encontrado: {e.caminho}", "codigo": "banco_ausente"})
         except Exception as e:  # erro inesperado: registra e devolve mensagem curta
             traceback.print_exc()
             self._json(500, {"erro": f"Erro interno: {e}"})
@@ -164,7 +166,12 @@ def main():
         sys.exit("CONFEITARIA_TOKEN não definido — recusando iniciar sem autenticação.")
 
     carregar_rotas()
-    contexto.db()  # abre o banco (e aplica migrações) antes da primeira requisição
+    try:
+        contexto.db()  # abre o banco (e aplica migrações) antes da primeira requisição
+    except contexto.BancoAusente as e:
+        # Sobe mesmo assim: a interface mostra o caminho e oferece localizar o arquivo,
+        # restaurar um backup ou começar um banco vazio (POST /banco/localizar).
+        print(f"[servico_local] banco configurado não encontrado: {e.caminho}", flush=True)
 
     from api import tarefas
     if os.environ.get("CONFEITARIA_SEM_COZINHA") != "1":

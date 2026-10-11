@@ -46,6 +46,7 @@ def saude(p: Pedido) -> dict:
         "ok": True,
         "versao": _versao(),
         "banco": contexto.banco_atual(),
+        "banco_ausente": contexto.banco_ausente(),
         "pid": os.getpid(),
         "usuario": contexto.usuario,
         "cozinha": f"http://{ip_local()}:{PORTA_COZINHA}",
@@ -169,7 +170,9 @@ def _logo_data_url(caminho: str | None) -> str | None:
 @rota("GET", "/empresa", publica=True)
 def empresa(p: Pedido) -> dict:
     """Nome e logo da confeitaria (tabela company) — usados no login e na barra lateral."""
-    rows = contexto.db().query("SELECT name, logo_path FROM company WHERE id=1")
+    from api.pedidos import dias_fechados
+    db = contexto.db()
+    rows = db.query("SELECT name, logo_path FROM company WHERE id=1")
     nome = rows[0]["name"] if rows and rows[0]["name"] else "Confeitaria"
     logo = rows[0]["logo_path"] if rows else None
-    return {"nome": nome, "logo": _logo_data_url(logo), "logo_path": logo}
+    return {"nome": nome, "logo": _logo_data_url(logo), "logo_path": logo, "dias_fechados": dias_fechados(db)}

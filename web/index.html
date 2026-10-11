@@ -991,6 +991,13 @@
         }
 
         // Função para formatar tamanho(s) adicionando 'cm'
+        // Texto vindo do banco (nomes, observações) entra no HTML sempre escapado:
+        // um "<" numa observação não pode virar código rodando no painel.
+        function esc(valor) {
+            return String(valor ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
+        // Já devolve escapado (usado direto dentro do HTML).
         function formatSize(sizeStr) {
             if (!sizeStr) return '';
             
@@ -998,7 +1005,7 @@
             const sizes = sizeStr.split(',').map(s => s.trim()).filter(s => s);
             // Adiciona 'cm' apenas a valores numéricos ("30" -> "30 cm", "Grande (3kg)" fica igual)
             const formatted = sizes.map(s => /^\d+([.,]\d+)?$/.test(s) ? `${s} cm` : s);
-            return formatted.join(', ');
+            return esc(formatted.join(', '));
         }
 
         // Funções do modal
@@ -1186,8 +1193,8 @@
                              onclick="setExactQuantity(${product.id}, 'ready-stock')"
                              title="💡 Clique para editar a quantidade">
                             <div class="product-info-left">
-                                <div class="product-name">${product.name}</div>
-                                <div class="product-desc">${product.description || 'Sem descrição'}</div>
+                                <div class="product-name">${esc(product.name)}</div>
+                                <div class="product-desc">${esc(product.description || 'Sem descrição')}</div>
                                 ${product.size ? `<div class="product-size">📏 Tamanho: ${formatSize(product.size)}</div>` : ''}
                                 <div class="product-stock-display">
                                     Estoque:
@@ -1291,8 +1298,8 @@
                 if (hasChanged || container.children.length === 0) {
                     container.innerHTML = data.orders.map(order => {
                         const formattedDate = order.delivery_date ? formatDate(order.delivery_date) : '';
-                        const statusClass = `status-${order.status}`;
-                        const statusText = getStatusText(order.status);
+                        const statusClass = `status-${esc(order.status)}`;
+                        const statusText = esc(getStatusText(order.status));
                         const isManual = order.source === 'manual';
                         
                         // Botão de excluir apenas para itens manuais (com data-item-id para event listener)
@@ -1306,10 +1313,10 @@
                                  style="cursor: pointer;"
                                  title="💡 Clique para editar quantidade, tamanho e observações">
                                 <div class="order-info">
-                                    <div class="order-customer">${order.customer}</div>
-                                    <div class="order-product">${order.product}</div>
+                                    <div class="order-customer">${esc(order.customer)}</div>
+                                    <div class="order-product">${esc(order.product)}</div>
                                     ${order.size ? `<div class="order-size">📏 Tamanho: ${formatSize(order.size)}</div>` : ''}
-                                    ${order.notes ? `<div class="order-notes" style="color: var(--text-gray); font-size: 0.9em; margin-top: 5px;">📝 Obs: ${order.notes}</div>` : ''}
+                                    ${order.notes ? `<div class="order-notes" style="color: var(--text-gray); font-size: 0.9em; margin-top: 5px;">📝 Obs: ${esc(order.notes)}</div>` : ''}
                                     ${formattedDate ? `<div class="order-date">📅 ${formattedDate}</div>` : ''}
                                 </div>
                                 <div class="order-right">
@@ -1320,7 +1327,7 @@
                                         `<span class="status-badge status-pending">📝 Manual</span>` :
                                         `<span class="status-badge ${statusClass}" 
                                               data-order-status="${order.id}"
-                                              data-status-value="${order.status}"
+                                              data-status-value="${esc(order.status)}"
                                               style="cursor: pointer;"
                                               title="Clique para alterar o status">
                                             ${statusText}
@@ -1434,7 +1441,7 @@
                         <div class="empty-state-icon">❌</div>
                         <p>Erro ao carregar lista de produção</p>
                         <p style="font-size: 0.9rem; color: var(--text-gray); margin-top: 10px;">
-                            ${error.message || 'Verifique a conexão com o servidor'}
+                            ${esc(error.message || 'Verifique a conexão com o servidor')}
                         </p>
                     </div>
                 `;
@@ -1590,7 +1597,7 @@
                         </div>
                         <div style="margin: 20px 0;">
                             <label style="display: block; margin-bottom: 5px; font-weight: bold; color: var(--text-primary);">Tamanho:</label>
-                            <input type="text" id="edit-size" value="${currentSize}" 
+                            <input type="text" id="edit-size" value="${esc(currentSize)}" 
                                 placeholder="Ex: G, P, 1kg, 500g..."
                                 style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary);">
                         </div>
@@ -1598,14 +1605,14 @@
                             <label style="display: block; margin-bottom: 5px; font-weight: bold; color: var(--text-primary);">Observações:</label>
                             <textarea id="edit-notes" 
                                 placeholder="Digite observações sobre este item..."
-                                style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary); min-height: 80px; resize: vertical; font-family: inherit;">${currentNotes}</textarea>
+                                style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-white); color: var(--text-primary); min-height: 80px; resize: vertical; font-family: inherit;">${esc(currentNotes)}</textarea>
                         </div>
                         <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 30px;">
                             <button onclick="closeEditModal()" 
                                 style="padding: 12px 24px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px;">
                                 Cancelar
                             </button>
-                            <button onclick="confirmEditItem('${orderId}')" 
+                            <button onclick="confirmEditItem('${esc(orderId)}')" 
                                 style="padding: 12px 24px; background: #ff6b6b; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px;">
                                 💾 Salvar
                             </button>
@@ -1689,7 +1696,7 @@
                         const select = document.getElementById('add-product-select');
                         select.innerHTML = '<option value="">Selecione um produto...</option>' +
                             data.products.map(p => 
-                                `<option value="${p.id}" data-size="${p.size || ''}">${p.name}${p.size ? ` (${p.size})` : ''}</option>`
+                                `<option value="${Number(p.id)}" data-size="${esc(p.size || '')}">${esc(p.name)}${p.size ? ` (${esc(p.size)})` : ''}</option>`
                             ).join('');
                     }
                 } catch (error) {

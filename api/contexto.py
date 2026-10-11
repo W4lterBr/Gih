@@ -31,12 +31,45 @@ def caminho_banco() -> str:
     return get_database_path()
 
 
+class BancoAusente(Exception):
+    """O banco configurado não existe (apagado, movido, pasta da rede fora do ar)."""
+
+    def __init__(self, caminho: str):
+        super().__init__(caminho)
+        self.caminho = caminho
+
+
+_ausente: Optional[str] = None
+
+
+def banco_ausente() -> Optional[str]:
+    """Caminho do banco configurado que não foi encontrado na última tentativa de abrir."""
+    return _ausente
+
+
+def _caminho_configurado() -> bool:
+    try:
+        from core.config import load_config
+        return bool(load_config().get("database_path"))
+    except Exception:
+        return False
+
+
 def db() -> ExtendedDatabase:
-    global _db, _caminho_db
+    """Abre o banco na primeira chamada. Se o caminho configurado não existe mais,
+    NÃO cria um banco vazio no lugar (para o usuário pareceria que perdeu tudo):
+    levanta BancoAusente e a interface pergunta o que fazer. Banco novo só é criado
+    sozinho na primeira instalação (nenhum caminho configurado ainda)."""
+    global _db, _caminho_db, _ausente
     if _db is None:
-        _caminho_db = caminho_banco()
+        caminho = caminho_banco()
+        if not os.path.isfile(caminho) and not os.environ.get("CONFEITARIA_DB") and _caminho_configurado():
+            _ausente = caminho
+            raise BancoAusente(caminho)
+        _caminho_db = caminho
         os.makedirs(os.path.dirname(_caminho_db) or ".", exist_ok=True)
         _db = ExtendedDatabase(_caminho_db)
+        _ausente = None
         if usuario:
             _db.current_user = usuario["username"]
             _db.current_role = usuario["role"]
@@ -68,7 +101,7 @@ def reabrir_banco() -> None:
     with TRAVA:
         fechar_banco()
         _caminho_db = None
-        db()
+        db()  # pode levantar BancoAusente
     from api.tarefas import painel_trocar_banco
     painel_trocar_banco(_caminho_db)
 

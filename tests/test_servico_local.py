@@ -133,7 +133,7 @@ def main() -> int:
         print("Pedidos")
         segunda = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
         st, js = c.req("POST", "/pedidos", {"customer_id": cid, "delivery_date": segunda.isoformat(), "products": [{"product_id": pid, "quantity": 1}]})
-        checar(st == 400 and js.get("codigo") == "segunda", "segunda-feira é recusada")
+        checar(st == 400 and js.get("codigo") == "dia_fechado", "segunda-feira (dia sem expediente padrão) é recusada")
         futuro = proxima_terca(date.today() + timedelta(days=1))
         lote = c.ok("POST", "/pedidos", {"customer_id": cid, "delivery_date": futuro.isoformat(), "label": "Urgente", "notes": "sem açúcar",
                                          "products": [{"product_id": pid, "quantity": 2}, {"product_id": vari[0], "quantity": 1}]})["ids"]
@@ -200,7 +200,7 @@ def main() -> int:
         iid = c.ok("POST", "/producao", {"product_id": pid, "quantity": 2, "size": "15"})["id"]
         e = estoque()[pid]
         c.ok("PUT", f"/producao/{iid}", {"quantity": 5})
-        checar(estoque()[pid] == e + 3, "mudar qtd lança diferença no estoque")
+        checar(estoque()[pid] == e, "mudar qtd na lista não mexe no estoque (só 'Produção feita')")
         dados = c.ok("GET", "/producao")
         checar(any(i["id"] == iid for i in dados["itens"]) and dados["estoque"], "lista + estoque")
         c.ok("POST", "/producao/remover", {"ids": [iid]})

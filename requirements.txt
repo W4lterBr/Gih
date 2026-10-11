@@ -6,6 +6,5 @@ openpyxl>=3.1.2        # relatórios e exportações em Excel
 reportlab>=4.0.0       # relatórios em PDF
 Pillow>=10.0           # logo nos relatórios Excel
 Flask>=3.0.0           # painel da cozinha (porta 5000)
-Flask-CORS>=4.0.0
 # Só para gerar o instalador (motor.spec)
 pyinstaller>=6.1.0

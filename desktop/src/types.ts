@@ -4,7 +4,8 @@ export type View =
 
 /** trocar_senha: entrou com a senha padrão/fraca — o motor só libera depois da troca. */
 export interface Usuario { id: number; username: string; role: "admin" | "common" | string; trocar_senha?: boolean }
-export interface Empresa { nome: string; logo: string | null; logo_path: string | null }
+/** dias_fechados: dias da semana sem expediente, numeração do motor (0 = segunda … 6 = domingo). */
+export interface Empresa { nome: string; logo: string | null; logo_path: string | null; dias_fechados?: number[] }
 
 export interface Cliente { id: number; name: string; phone: string | null; address: string | null; observation: string | null; birthday?: string | null }
 

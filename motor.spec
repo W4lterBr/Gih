@@ -32,7 +32,7 @@ hidden_imports = [
     'core.config', 'core.credenciais', 'core.database', 'core.extended_database', 'core.formatting', 'core.licenca',
     'core.logger', 'core.models', 'core.paths', 'core.security', 'core.services', 'core.stock_categories',
     'core.web_server',
-    'flask', 'flask_cors', 'bcrypt', 'yaml', 'psutil', 'sqlite3',
+    'flask', 'bcrypt', 'yaml', 'psutil', 'sqlite3',
     'openpyxl', 'openpyxl.styles', 'openpyxl.drawing.image', 'PIL', 'PIL.Image',
     'reportlab', 'reportlab.lib', 'reportlab.platypus', 'reportlab.lib.pagesizes', 'reportlab.lib.styles',
 ]

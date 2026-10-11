@@ -56,31 +56,22 @@ def adicionar_item(p: Pedido) -> dict:
 
 @rota("PUT", "/producao/{id}")
 def editar_item(p: Pedido) -> dict:
-    """Mudar a quantidade lança a diferença no estoque como movimentação 'Produção'
-    (mesma regra do painel da cozinha)."""
+    """Edita um item da lista. Não mexe no estoque: a lista diz o que produzir e o
+    estoque só recebe as quantidades em "Produção feita" no painel da cozinha (antes a
+    edição lançava a diferença e a conclusão somava tudo de novo — contagem dupla)."""
     db = contexto.db()
     iid = p.id()
-    r = db.query("SELECT product_id, quantity FROM production_items WHERE id=?", (iid,))
-    if not r:
+    if not db.query("SELECT 1 FROM production_items WHERE id=?", (iid,)):
         raise ErroApi("Item não encontrado.", 404)
-    diferenca = 0
     with db.transaction():
         if "quantity" in p.corpo:
             nova = inteiro(p.c("quantity"), "Quantidade", 1, 1_000_000)
-            diferenca = nova - r[0]["quantity"]
             db.execute("UPDATE production_items SET quantity=? WHERE id=?", (nova, iid))
-            if diferenca:
-                db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (diferenca, r[0]["product_id"]))
-                db.execute(
-                    "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
-                    (r[0]["product_id"], "entrada" if diferenca > 0 else "saida", "Produção", abs(diferenca),
-                     "Ajuste na lista de produção", None, agora(), db.current_user or "unknown"),
-                )
         if "size" in p.corpo:
             db.execute("UPDATE production_items SET size=? WHERE id=?", (texto(p.c("size")), iid))
         if "notes" in p.corpo:
             db.execute("UPDATE production_items SET notes=? WHERE id=?", (texto(p.c("notes")), iid))
-    return {"ok": True, "estoque": diferenca}
+    return {"ok": True}
 
 
 @rota("POST", "/producao/remover")
@@ -133,6 +124,15 @@ def importar_pedidos(p: Pedido) -> dict:
 
 # ---------------------------------------------------------------- dashboard
 
+# Pedidos com entrega num dia contados como na lista de Pedidos: os itens de um lote
+# são um pedido só; pedidos separados do mesmo cliente são pedidos diferentes.
+SQL_PEDIDOS_DO_DIA = """
+    SELECT COUNT(*) FROM (
+        SELECT 1 FROM orders WHERE DATE(delivery_date) = ?
+        GROUP BY customer_id, delivery_date, status,
+                 CASE WHEN notes LIKE 'LOTE:%' THEN SUBSTR(notes, 1, INSTR(notes, '|')) ELSE id END
+    )"""
+
 
 @rota("GET", "/dashboard")
 def dashboard(p: Pedido) -> dict:
@@ -142,7 +142,7 @@ def dashboard(p: Pedido) -> dict:
     hoje = hoje_iso()
     um = lambda sql, *a: db.query(sql, a)[0][0]  # noqa: E731
     kpis = {
-        "pedidos_hoje": um("SELECT COUNT(*) FROM orders WHERE DATE(delivery_date)=?", hoje),
+        "pedidos_hoje": um(SQL_PEDIDOS_DO_DIA, hoje),
         "itens_hoje": um("SELECT COALESCE(SUM(quantity),0) FROM orders WHERE DATE(delivery_date)=?", hoje),
         "aguardando_pagamento": um("SELECT COUNT(*) FROM orders WHERE status='Aguardando Pagamento' AND DATE(delivery_date)>=?", hoje),
         "proximos_7_dias": um("SELECT COUNT(*) FROM orders WHERE DATE(delivery_date) BETWEEN DATE(?, '+1 day') AND DATE(?, '+7 days')", hoje, hoje),
@@ -183,7 +183,7 @@ def contagens_menu(p: Pedido) -> dict:
     """Números pequenos do menu lateral (consulta leve, chamada com frequência)."""
     db = contexto.db()
     return {
-        "pedidosHoje": db.query("SELECT COUNT(DISTINCT customer_id || '|' || COALESCE(SUBSTR(notes,1,INSTR(notes,'|')), id)) FROM orders WHERE DATE(delivery_date)=?", (hoje_iso(),))[0][0],
+        "pedidosHoje": db.query(SQL_PEDIDOS_DO_DIA, (hoje_iso(),))[0][0],
         "producao": db.query("SELECT COUNT(*) FROM production_items")[0][0],
         "esgotados": db.query("SELECT COUNT(*) FROM products WHERE stock <= 0")[0][0],
     }

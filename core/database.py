@@ -58,9 +58,10 @@ class Database:
             """
         )
         self.conn.commit()
-        # Cria usuário admin padrão se não existir
-        admin = cur.execute("SELECT 1 FROM users WHERE username=?", ("admin",)).fetchone()
-        if not admin:
+        # Usuário admin padrão (senha "admin", troca obrigatória no 1º login) só num banco
+        # SEM nenhum usuário. Antes bastava não existir alguém chamado "admin": renomear
+        # ou excluir o admin fazia o sistema recriar um administrador com senha "admin".
+        if not cur.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             if bcrypt:
                 password_hash = bcrypt.hashpw("admin".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             else:

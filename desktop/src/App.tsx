@@ -5,6 +5,7 @@ import type { Empresa, Usuario, View } from "./types";
 import { TitleBar } from "./components/TitleBar";
 import { ITENS_CADASTRO, ITENS_OPERACAO, Sidebar } from "./components/Sidebar";
 import { Login, TrocaObrigatoria } from "./components/Login";
+import { BancoAusente } from "./components/BancoAusente";
 import { Palette, type Comando } from "./components/Palette";
 import { InicioView } from "./views/InicioView";
 import { PedidosView } from "./views/PedidosView";
@@ -17,7 +18,7 @@ import { ConfigView } from "./views/ConfigView";
 import { FaixaLicenca, useLicenca } from "./licenca";
 
 const CHAVE_TEMA = "confeitaria.tema";
-const EMPRESA_PADRAO: Empresa = { nome: "Confeitaria", logo: null, logo_path: null };
+const EMPRESA_PADRAO: Empresa = { nome: "Confeitaria", logo: null, logo_path: null, dias_fechados: [0] };
 
 function temaInicial() {
   try {
@@ -82,6 +83,15 @@ export default function App() {
             <><div className="spinner" /><span>Abrindo o sistema…</span></>
           )}
         </div>
+      </div>
+    );
+  }
+
+  if (saude?.banco_ausente) {
+    return (
+      <div className="window">
+        <TitleBar motor={estado} />
+        <BancoAusente caminho={saude.banco_ausente} />
       </div>
     );
   }

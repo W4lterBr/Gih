@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../contexto";
 import type { Cliente, Etiqueta, PedidoDetalhe, Produto } from "../types";
-import { ehSegunda, fmtTamanho, isoLocal, somarDias } from "../format";
+import { diaFechado, diaSemana, fmtTamanho, isoLocal, NOMES_DIAS, somarDias } from "../format";
 import { Campo, Modal } from "../components/ui";
 import { Combo } from "../components/Combo";
 import { Icone } from "../components/Icone";
@@ -11,8 +11,12 @@ export const STATUS = ["Aguardando Pagamento", "Pagamento na Retirada", "Pago"];
 
 interface ItemForm { chave: number; id?: number; product_id: number | null; quantity: number }
 
-/** Próximo dia com expediente (pula segunda-feira). */
-const proximoUtil = (iso: string) => (ehSegunda(iso) ? somarDias(iso, 1) : iso);
+/** Próximo dia com expediente (pula os dias sem expediente da confeitaria). */
+function proximoUtil(iso: string, fechados: number[] | undefined) {
+  let d = iso;
+  for (let i = 0; i < 7 && diaFechado(d, fechados); i++) d = somarDias(d, 1);
+  return d;
+}
 
 /**
  * Novo pedido (um ou vários produtos) ou edição de uma linha da lista.
@@ -24,12 +28,13 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
   onClose: () => void;
   onSalvo: (msg: string) => void;
 }) {
-  const { toast } = useApp();
+  const { toast, empresa } = useApp();
+  const fechados = empresa.dias_fechados;
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [etiquetas, setEtiquetas] = useState<Etiqueta[]>([]);
   const [cliente, setCliente] = useState<number | null>(editar?.customer_id ?? clienteFixo ?? null);
-  const [entrega, setEntrega] = useState(editar?.delivery_date ?? proximoUtil(isoLocal()));
+  const [entrega, setEntrega] = useState(editar?.delivery_date ?? proximoUtil(isoLocal(), fechados));
   const [status, setStatus] = useState(editar?.status ?? STATUS[0]);
   const [etiqueta, setEtiqueta] = useState(editar?.label ?? "Comum");
   const [obs, setObs] = useState(editar?.obs ?? "");
@@ -52,7 +57,9 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
   const opProdutos = useMemo(() => produtos.map((p) => ({ id: p.id, rotulo: p.name, detalhe: `${p.stock} em estoque${p.size ? ` · ${fmtTamanho(p.size)}` : ""}` })), [produtos]);
   const prodPorId = useMemo(() => new Map(produtos.map((p) => [p.id, p])), [produtos]);
   const statusOpcoes = STATUS.includes(status) ? STATUS : [...STATUS, status];
-  const segunda = !!entrega && ehSegunda(entrega);
+  // Pedido existente que já estava num dia fechado pode ser salvo sem mudar a data.
+  const fechado = diaFechado(entrega, fechados) && entrega !== editar?.delivery_date?.slice(0, 10);
+  const avisoFechado = fechado ? `${NOMES_DIAS[diaSemana(entrega)]} não há expediente.` : null;
   const total = itens.reduce((s, i) => s + (i.product_id ? i.quantity : 0), 0);
 
   const mudarItem = (chave: number, campo: Partial<ItemForm>) => setItens((l) => l.map((i) => (i.chave === chave ? { ...i, ...campo } : i)));
@@ -63,7 +70,7 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
     if (!cliente) { setErro("Selecione um cliente."); return; }
     if (!validos.length) { setErro("Adicione pelo menos um produto ao pedido."); return; }
     if (validos.some((i) => !i.quantity || i.quantity < 1)) { setErro("A quantidade deve ser maior que zero."); return; }
-    if (segunda) { setErro("Segunda não há expediente, pedido negado."); return; }
+    if (fechado) { setErro(`${avisoFechado} Pedido negado.`); return; }
     setErro("");
     setSalvando(true);
     try {
@@ -108,11 +115,11 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
           <Combo opcoes={opClientes} valor={cliente} onChange={setCliente} placeholder="Digite para buscar o cliente…"
             autoFocus={!clienteFixo && !editar} desabilitado={!!clienteFixo} />
         </Campo>
-        <Campo rotulo="Entrega" erro={segunda ? "Segunda não há expediente." : null}>
+        <Campo rotulo="Entrega" erro={avisoFechado}>
           <div className="linha-data">
             <input type="date" value={entrega} onChange={(e) => setEntrega(e.target.value)} required />
             {rapidas.map(([r, d]) => (
-              <button type="button" key={r} className="chip mini" aria-pressed={entrega === d} disabled={ehSegunda(d)} onClick={() => setEntrega(d)}>{r}</button>
+              <button type="button" key={r} className="chip mini" aria-pressed={entrega === d} disabled={diaFechado(d, fechados)} onClick={() => setEntrega(d)}>{r}</button>
             ))}
           </div>
         </Campo>

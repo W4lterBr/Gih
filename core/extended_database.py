@@ -143,14 +143,15 @@ class ExtendedDatabase(Database):
                         description TEXT,
                         size TEXT,
                         stock INTEGER NOT NULL DEFAULT 0,
-                        min_stock INTEGER NOT NULL DEFAULT 0
+                        min_stock INTEGER NOT NULL DEFAULT 0,
+                        price REAL NOT NULL DEFAULT 0.0
                     )
                 """)
                 
-                # Copia dados (sem requires_min_stock)
+                # Copia dados (sem requires_min_stock; price já existe pela migração acima)
                 cur.execute("""
-                    INSERT INTO products_new (id, name, description, size, stock, min_stock)
-                    SELECT id, name, description, size, stock, min_stock FROM products
+                    INSERT INTO products_new (id, name, description, size, stock, min_stock, price)
+                    SELECT id, name, description, size, stock, min_stock, COALESCE(price, 0) FROM products
                 """)
                 
                 # Remove tabela antiga e renomeia
@@ -169,59 +170,10 @@ class ExtendedDatabase(Database):
                     pass
                 print(f"⚠️ Não foi possível remover campo requires_min_stock: {e}")
         
-        # Migração: remove coluna price da tabela products (não controlamos preços)
-        cur.execute("PRAGMA table_info(products)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "price" in columns:
-            try:
-                # Limpa tabela temporária se existir de tentativa anterior
-                cur.execute("DROP TABLE IF EXISTS products_new")
-                
-                # Desabilita foreign keys temporariamente
-                cur.execute("PRAGMA foreign_keys=OFF")
-                
-                # SQLite não suporta DROP COLUMN diretamente, então recriamos a tabela
-                cur.execute("BEGIN IMMEDIATE")
-                
-                # Cria tabela temporária sem price
-                cur.execute("""
-                    CREATE TABLE products_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        description TEXT,
-                        size TEXT,
-                        stock INTEGER NOT NULL DEFAULT 0,
-                        min_stock INTEGER NOT NULL DEFAULT 0 INTEGER NOT NULL DEFAULT 0
-                    )
-                """)
-                
-                # Copia os dados (sem a coluna price)
-                cur.execute("""
-                    INSERT INTO products_new (id, name, description, size, stock, min_stock)
-                    SELECT id, name, description, size, stock, min_stock, 
-                           COALESCE(0) FROM products
-                """)
-                
-                # Remove a tabela antiga e renomeia a nova
-                cur.execute("DROP TABLE products")
-                cur.execute("ALTER TABLE products_new RENAME TO products")
-                
-                self.conn.commit()
-                
-                # Reabilita foreign keys
-                cur.execute("PRAGMA foreign_keys=ON")
-                
-                print("✓ Coluna price removida com sucesso da tabela products")
-            except Exception as e:
-                self.conn.rollback()
-                # Reabilita foreign keys mesmo em caso de erro
-                try:
-                    cur.execute("PRAGMA foreign_keys=ON")
-                except:
-                    pass
-                # Se falhar, não é crítico - price apenas não será usado
-                print(f"Aviso: Não foi possível remover coluna price: {e}")
-        
+        # (Havia aqui uma migração que removia a coluna price. Ela falhava sempre por
+        # erro de sintaxe e, se corrigida, apagaria os preços que o app usa hoje
+        # (valor estimado, fechamento, perdas). Removida de propósito.)
+
         # Preenche order_number em pedidos antigos
         cur.execute("SELECT id FROM orders WHERE order_number IS NULL OR order_number = '' ORDER BY id")
         rows = cur.fetchall()
@@ -297,6 +249,13 @@ class ExtendedDatabase(Database):
             )
         """)
         
+        # Migração: dias da semana sem expediente (pedidos não podem ser entregues neles).
+        # Números do Python (0 = segunda … 6 = domingo), separados por vírgula. Padrão "0":
+        # segunda, a regra que era fixa no código; cada confeitaria ajusta em Configurações.
+        cur.execute("PRAGMA table_info(company)")
+        if "closed_weekdays" not in [row[1] for row in cur.fetchall()]:
+            cur.execute("ALTER TABLE company ADD COLUMN closed_weekdays TEXT DEFAULT '0'")
+
         # Insere registro padrão se não existir
         existing_company = cur.execute("SELECT 1 FROM company WHERE id=1").fetchone()
         if not existing_company:

@@ -67,14 +67,7 @@ def info(p: Pedido) -> dict:
     modificado = datetime.fromtimestamp(os.path.getmtime(caminho)).strftime("%Y-%m-%d %H:%M:%S") if tamanho else None
     um = lambda t: db.query(f"SELECT COUNT(*) FROM {t}")[0][0]  # noqa: E731
     rede = caminho.startswith("\\\\") or caminho.startswith("//")
-    backups = []
-    if os.path.isdir(BACKUP_DIR):
-        for nome in os.listdir(BACKUP_DIR):
-            if nome.lower().endswith(".zip"):
-                f = os.path.join(BACKUP_DIR, nome)
-                backups.append({"nome": nome, "caminho": f, "tamanho": os.path.getsize(f),
-                                "data": datetime.fromtimestamp(os.path.getmtime(f)).strftime("%Y-%m-%d %H:%M:%S")})
-    backups.sort(key=lambda b: b["data"], reverse=True)
+    backups = _backups_recentes()
     cfg = {**CONFIG_BACKUP_PADRAO, **(load_config().get("auto_backup") or {})}
     return {
         "caminho": caminho,
@@ -84,7 +77,7 @@ def info(p: Pedido) -> dict:
         "journal": db.query("PRAGMA journal_mode")[0][0],
         "contagens": {"clientes": um("customers"), "produtos": um("products"), "pedidos": um("orders")},
         "pasta_backups": BACKUP_DIR,
-        "backups": backups[:30],
+        "backups": backups,
         "auto_backup": {"enabled": bool(cfg.get("enabled", True)), "interval_hours": int(cfg.get("interval_hours") or 1)},
         "ultimo_backup_auto": _estado_auto["ultimo"],
     }
@@ -166,6 +159,31 @@ def _banco_do_zip(zip_path: str, tmp: str) -> str:
     return os.path.join(tmp, principal)
 
 
+def _validar_backup(origem: str, tmp: str) -> str:
+    """Copia o banco do backup (.zip ou .db) para `tmp`, consolida o WAL e confere a
+    integridade e as tabelas. Devolve o caminho da cópia pronta para usar."""
+    if origem.lower().endswith(".zip"):
+        novo = _banco_do_zip(origem, tmp)
+    elif origem.lower().endswith(".db"):
+        novo = os.path.join(tmp, "restaurar.db")
+        shutil.copy2(origem, novo)
+    else:
+        raise ErroApi("Escolha um backup .zip ou um arquivo .db.")
+    try:
+        c = sqlite3.connect(novo)
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        tabelas = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        c.close()
+    except sqlite3.DatabaseError as e:
+        raise ErroApi(f"O arquivo não é um banco de dados válido: {e}")
+    if not ok:
+        raise ErroApi("O banco de dados no backup está corrompido. Nada foi alterado.")
+    if not {"orders", "products", "customers"} <= tabelas:
+        raise ErroApi("O arquivo não parece ser um banco da Confeitaria (faltam tabelas de pedidos, produtos ou clientes).")
+    return novo
+
+
 @rota("POST", "/banco/restaurar", admin=True)
 def restaurar(p: Pedido) -> dict:
     """Substitui o banco atual pelo do backup (.zip ou .db), com backup de segurança antes."""
@@ -176,27 +194,7 @@ def restaurar(p: Pedido) -> dict:
     if not atual:
         raise ErroApi("Banco atual desconhecido.")
     with tempfile.TemporaryDirectory() as tmp:
-        if origem.lower().endswith(".zip"):
-            novo = _banco_do_zip(origem, tmp)
-        elif origem.lower().endswith(".db"):
-            novo = os.path.join(tmp, "restaurar.db")
-            shutil.copy2(origem, novo)
-        else:
-            raise ErroApi("Escolha um backup .zip ou um arquivo .db.")
-        # Consolida o WAL do backup (se houver) e confere a integridade antes de mexer no atual.
-        try:
-            c = sqlite3.connect(novo)
-            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-            tabelas = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            c.close()
-        except sqlite3.DatabaseError as e:
-            raise ErroApi(f"O arquivo não é um banco de dados válido: {e}")
-        if not ok:
-            raise ErroApi("O banco de dados no backup está corrompido. Nada foi alterado.")
-        if not {"orders", "products", "customers"} <= tabelas:
-            raise ErroApi("O arquivo não parece ser um banco da Confeitaria (faltam tabelas de pedidos, produtos ou clientes).")
-
+        novo = _validar_backup(origem, tmp)
         seguranca = os.path.join(BACKUP_DIR, f"backup_before_restore_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.zip")
         criar_backup_zip(seguranca)
 
@@ -236,6 +234,75 @@ def usar_banco(p: Pedido) -> dict:
         raise ErroApi("Não foi possível salvar a configuração de banco. Verifique as permissões do sistema.")
     contexto.reabrir_banco()
     return {"ok": True, "caminho": contexto.banco_atual(), "mensagem": msg}
+
+
+def _backups_recentes(limite: int = 30) -> list[dict]:
+    lista = []
+    if os.path.isdir(BACKUP_DIR):
+        for nome in os.listdir(BACKUP_DIR):
+            if nome.lower().endswith(".zip"):
+                f = os.path.join(BACKUP_DIR, nome)
+                lista.append({"nome": nome, "caminho": f, "tamanho": os.path.getsize(f),
+                              "data": datetime.fromtimestamp(os.path.getmtime(f)).strftime("%Y-%m-%d %H:%M:%S")})
+    lista.sort(key=lambda b: b["data"], reverse=True)
+    return lista[:limite]
+
+
+@rota("GET", "/banco/ausente", publica=True)
+def info_ausente(p: Pedido) -> dict:
+    """Para a tela "banco não encontrado": o caminho que sumiu e os backups locais."""
+    ausente = contexto.banco_ausente()
+    if not ausente:
+        raise ErroApi("O banco de dados já está aberto.", 409)
+    return {"caminho": ausente, "backups": _backups_recentes(5)}
+
+
+@rota("POST", "/banco/localizar", publica=True, escreve=False)
+def localizar(p: Pedido) -> dict:
+    """Banco configurado não encontrado (tela de abertura). Sem login, porque os
+    usuários ficam no próprio banco — por isso só funciona enquanto o banco está
+    ausente. `acao`:
+      tentar     abre de novo o caminho configurado (ex.: pasta da rede voltou);
+      abrir      passa a usar outro arquivo .db existente;
+      restaurar  extrai um backup (.zip ou .db) para o caminho configurado;
+      criar      começa um banco vazio no caminho configurado (pedido explícito)."""
+    ausente = contexto.banco_ausente()
+    if not ausente:
+        raise ErroApi("O banco de dados já está aberto.", 409)
+    acao = p.c("acao")
+    caminho = str(p.c("caminho") or "").strip()
+    with contexto.TRAVA:
+        if acao == "tentar":
+            pass
+        elif acao == "abrir":
+            caminho = os.path.abspath(caminho)
+            if not caminho.lower().endswith(".db") or not os.path.isfile(caminho):
+                raise ErroApi("Escolha um arquivo .db existente.")
+            valido, msg = validate_database_path(caminho)
+            if not valido:
+                raise ErroApi(msg)
+            if not set_database_path(caminho):
+                raise ErroApi("Não foi possível salvar a configuração de banco.")
+        elif acao == "restaurar":
+            if not os.path.isfile(caminho):
+                raise ErroApi("Nenhum arquivo selecionado.")
+            with tempfile.TemporaryDirectory() as tmp:
+                novo = _validar_backup(caminho, tmp)
+                os.makedirs(os.path.dirname(ausente) or ".", exist_ok=True)
+                for sufixo in ("-wal", "-shm"):  # restos do banco que sumiu não podem ser aplicados
+                    if os.path.exists(ausente + sufixo):
+                        os.remove(ausente + sufixo)
+                shutil.copyfile(novo, ausente)
+        elif acao == "criar":
+            os.makedirs(os.path.dirname(ausente) or ".", exist_ok=True)
+            sqlite3.connect(ausente).close()
+        else:
+            raise ErroApi("Ação inválida.")
+        try:
+            contexto.reabrir_banco()
+        except contexto.BancoAusente as e:
+            raise ErroApi(f"O banco ainda não foi encontrado: {e.caminho}", 404, "banco_ausente")
+    return {"ok": True, "caminho": contexto.banco_atual()}
 
 
 @rota("POST", "/banco/reparar", admin=True)

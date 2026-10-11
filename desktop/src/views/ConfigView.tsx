@@ -2,7 +2,7 @@ import { useState } from "react";
 import { abrirUrl, api, escolherAbrir, escolherSalvar, mostrarNoExplorer } from "../api";
 import { useApp } from "../contexto";
 import type { Usuario, View } from "../types";
-import { fmtDataHora, fmtInt, isoLocal, sigla } from "../format";
+import { fmtDataHora, fmtInt, isoLocal, NOMES_DIAS, sigla } from "../format";
 import { Campo, Modal, useCarregar } from "../components/ui";
 import { Icone } from "../components/Icone";
 import { LicencaView } from "./LicencaView";
@@ -51,6 +51,12 @@ function Empresa() {
     try { await api.put("/empresa/logo", { caminho }); toast("Logo atualizada."); recarregarEmpresa(); }
     catch (e) { toast((e as Error).message, true); }
   };
+  const fechados = empresa.dias_fechados ?? [];
+  const alternarDia = async (d: number) => {
+    const dias = fechados.includes(d) ? fechados.filter((x) => x !== d) : [...fechados, d];
+    try { await api.put("/empresa/dias-fechados", { dias }); recarregarEmpresa(); }
+    catch (e) { toast((e as Error).message, true); }
+  };
   const removerLogo = async () => {
     if (!(await confirmar({ titulo: "Remover logo", texto: "Remover a logo da empresa?", ok: "Remover", perigo: true }))) return;
     try { await api.del("/empresa/logo"); toast("Logo removida."); recarregarEmpresa(); }
@@ -71,6 +77,14 @@ function Empresa() {
           <span className="logo-previa">{empresa.logo ? <img src={empresa.logo} alt="" /> : <span className="logo-sigla">{sigla(empresa.nome)}</span>}</span>
           <button className="btn" onClick={trocarLogo}><Icone nome="upload" tam={14} />{empresa.logo ? "Trocar" : "Escolher"}</button>
           {empresa.logo && <button className="btn perigo" onClick={removerLogo}>Remover</button>}
+        </div>
+      </div>
+      <div className="set">
+        <div><b>Dias sem expediente</b><p>Pedidos não podem ser marcados para entrega nestes dias.</p></div>
+        <div className="ctl linha-ctl dias-semana" role="group" aria-label="Dias sem expediente">
+          {NOMES_DIAS.map((n, d) => (
+            <button key={d} type="button" className="chip" aria-pressed={fechados.includes(d)} onClick={() => alternarDia(d)} title={n}>{n.slice(0, 3)}</button>
+          ))}
         </div>
       </div>
     </div>

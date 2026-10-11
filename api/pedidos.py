@@ -34,9 +34,23 @@ def separar_lote(notes):
     return m.group(1), int(m.group(2)), notes[m.end():]
 
 
+NOMES_DIAS = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+
+
+def dias_fechados(db) -> list[int]:
+    """Dias da semana sem expediente (0 = segunda … 6 = domingo), da tabela company."""
+    try:
+        r = db.query("SELECT closed_weekdays FROM company WHERE id=1")
+        bruto = (r[0]["closed_weekdays"] if r else "0") or ""
+    except Exception:
+        bruto = "0"
+    return sorted({int(x) for x in str(bruto).split(",") if x.strip().isdigit() and 0 <= int(x) <= 6})
+
+
 def _validar_entrega(d_iso: str) -> None:
-    if date.fromisoformat(d_iso).weekday() == 0:
-        raise ErroApi("Segunda não há expediente, pedido negado.", 400, "segunda")
+    dia = date.fromisoformat(d_iso).weekday()
+    if dia in dias_fechados(contexto.db()):
+        raise ErroApi(f"{NOMES_DIAS[dia]} não há expediente, pedido negado.", 400, "dia_fechado")
 
 
 # ---------------------------------------------------------------- listagem
@@ -185,7 +199,10 @@ def atualizar_pedido(p: Pedido) -> dict:
     pid = inteiro(p.c("product_id", a["product_id"]), "Produto", 1)
     qtd = inteiro(p.c("quantity", a["quantity"]), "Quantidade", 1, 1_000_000)
     entrega = data_iso(p.c("delivery_date", a["delivery_date"]), "Entrega")
-    _validar_entrega(entrega)
+    # Só confere o dia quando a data muda: um pedido antigo num dia que virou "sem
+    # expediente" ainda pode ter o pagamento, a etiqueta etc. alterados.
+    if entrega != data_iso(a["delivery_date"], "Entrega"):
+        _validar_entrega(entrega)
     status = str(p.c("status", a["status"]))
     if status not in STATUS and status != a["status"]:
         raise ErroApi("Status inválido.")

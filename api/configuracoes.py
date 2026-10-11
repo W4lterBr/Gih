@@ -25,6 +25,21 @@ def salvar_nome(p: Pedido) -> dict:
     return {"ok": True}
 
 
+@rota("PUT", "/empresa/dias-fechados", admin=True)
+def salvar_dias_fechados(p: Pedido) -> dict:
+    """Dias da semana sem expediente (0 = segunda … 6 = domingo): pedidos não podem ser
+    marcados para entrega nesses dias."""
+    dias = p.c("dias")
+    if not isinstance(dias, list):
+        raise ErroApi("Dias inválidos.")
+    escolhidos = sorted({inteiro(d, "dias", 0, 6) for d in dias})
+    if len(escolhidos) == 7:
+        raise ErroApi("Deixe pelo menos um dia da semana com expediente.")
+    contexto.db().execute("UPDATE company SET closed_weekdays=?, updated_at=? WHERE id=1",
+                          (",".join(map(str, escolhidos)), agora()))
+    return {"ok": True, "dias_fechados": escolhidos}
+
+
 @rota("PUT", "/empresa/logo")
 def salvar_logo(p: Pedido) -> dict:
     """Copia a imagem escolhida para a pasta de dados do app (gravável mesmo com o app

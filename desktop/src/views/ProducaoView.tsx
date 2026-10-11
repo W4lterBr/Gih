@@ -77,8 +77,8 @@ export function ProducaoView() {
   const editar = async (i: ItemProducao, campo: "quantity" | "size" | "notes", v: string) => {
     try {
       const corpo = campo === "quantity" ? { quantity: Number(v) } : { [campo]: v };
-      const r = await api.put<{ estoque: number }>(`/producao/${i.id}`, corpo);
-      toast(campo === "quantity" && r.estoque ? `Quantidade atualizada (estoque ${r.estoque > 0 ? "+" : ""}${r.estoque}).` : "Item atualizado.");
+      await api.put(`/producao/${i.id}`, corpo);
+      toast("Item atualizado.");
       recarregar(true);
     } catch (e) { toast((e as Error).message, true); }
   };

@@ -64,7 +64,7 @@ export const api = {
 
 export type EstadoMotor = "iniciando" | "pronto" | "erro";
 
-export interface Saude { ok: boolean; versao: string; banco: string | null; usuario: { id: number; username: string; role: string } | null; cozinha: string }
+export interface Saude { ok: boolean; versao: string; banco: string | null; banco_ausente?: string | null; usuario: { id: number; username: string; role: string } | null; cozinha: string }
 
 /** Espera o motor responder (ele sobe em paralelo com a janela). */
 export function useMotor() {
