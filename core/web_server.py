@@ -33,6 +33,8 @@ class WebServer:
         """
         self.db_path = db_path
         self.web_dir = web_dir
+        # Função que diz se a licença está em modo somente leitura (definida pelo motor).
+        self.somente_leitura = None
         self.port = port
         self.access_token = access_token
         self.app = Flask(__name__)
@@ -74,6 +76,10 @@ class WebServer:
             supplied = request.headers.get('X-Panel-Token') or request.args.get('token')
             if supplied != self.access_token:
                 return jsonify({'success': False, 'error': 'PIN de acesso inválido ou ausente'}), 401
+            # Licença DWM bloqueada: o painel continua mostrando, mas não altera nada.
+            if request.method not in ('GET', 'HEAD', 'OPTIONS') and self.somente_leitura and self.somente_leitura():
+                return jsonify({'success': False,
+                                'error': 'Licença DWM bloqueada: o sistema está em modo somente leitura até a fatura ser regularizada.'}), 423
             return None
 
     def _setup_routes(self):

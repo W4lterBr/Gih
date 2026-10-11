@@ -5,13 +5,17 @@ from typing import Dict, Any, Optional
 import yaml
 import os
 import sys
-from PyQt6.QtWidgets import QWidget, QFileDialog
 
 def get_app_data_directory() -> str:
     """
     Retorna o diretório de dados da aplicação de forma robusta.
     Funciona tanto em desenvolvimento quanto em executáveis PyInstaller.
     """
+    # Testes automatizados: pasta de dados isolada (config.yaml, licença), nunca a real.
+    isolada = os.environ.get("CONFEITARIA_DATA_DIR")
+    if isolada:
+        os.makedirs(isolada, exist_ok=True)
+        return os.path.abspath(isolada)
     try:
         # Se estamos executando via PyInstaller
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -35,7 +39,7 @@ _DATA_DIR = get_app_data_directory()
 # Caminho para o arquivo de configuração
 _CONFIG_PATH = os.path.join(_DATA_DIR, 'config.yaml')
 
-def apply_popup_style(dialog: QWidget) -> None:
+def apply_popup_style(dialog: Any) -> None:
     """
     Prepara um diálogo para seguir o tema global (definido em ui/theme/qss.py).
     
@@ -44,12 +48,14 @@ def apply_popup_style(dialog: QWidget) -> None:
     """
     # As cores vêm do tema global da aplicação (ui/theme/qss.py), aplicado em
     # QApplication; aqui só garantimos que o diálogo consiga recebê-lo.
-    # Forçar QFileDialog não nativo para aplicar QSS
+    # Forçar QFileDialog não nativo para aplicar QSS. Import tardio: este módulo
+    # também é usado pelo motor (servico_local.py), que não carrega o Qt.
+    from PyQt6.QtWidgets import QFileDialog
     if isinstance(dialog, QFileDialog):
         dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
 
 # Manter compatibilidade com função anterior
-def apply_dark_popup_style(dialog: QWidget) -> None:
+def apply_dark_popup_style(dialog: Any) -> None:
     """
     Aplica o estilo apropriado a um diálogo baseado no tema ativo.
     DEPRECATED: Use apply_popup_style() para melhor clareza.
