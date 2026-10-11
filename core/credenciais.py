@@ -2,8 +2,8 @@
 """Credenciais lembradas no login ("Lembrar credenciais").
 
 Arquivo ~/.confeitaria/credentials.json: usuário em base64 e senha protegida pelo
-DPAPI do Windows (só a mesma conta do Windows consegue ler). Usado pela tela de
-login do app PyQt e pelo motor da interface nova (servico_local.py).
+DPAPI do Windows (só a mesma conta do Windows consegue ler). Usado pelo motor
+(servico_local.py); mesmo arquivo e formato da versão 1.x (credenciais lembradas continuam).
 """
 
 import base64

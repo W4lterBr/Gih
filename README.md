@@ -1,355 +1,64 @@
-# 🍰 Sistema de Gestão para Confeitaria
+# Confeitaria — Gestão de Pedidos
 
-<div align="center">
+Sistema de pedidos, produção e estoque para confeitarias. Versão 2.0: interface desktop
+no padrão do **Busca XML Desktop** (Tauri + React) com as regras de negócio em Python.
+Um mesmo código atende vários clientes (Gih, Marilia…): nome e logo vêm da tabela
+`company` (Configurações → Empresa), nunca fixos no código.
 
-![Version](https://img.shields.io/badge/version-1.15.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.10+-green.svg)
-![PyQt6](https://img.shields.io/badge/PyQt6-6.6.1+-orange.svg)
-![License](https://img.shields.io/badge/license-Local-green.svg)
-
-**Sistema completo de gestão para confeitarias com interface moderna e dashboard analytics**
-
-[Funcionalidades](#-funcionalidades) • [Instalação](#-instalação) • [Como Usar](#-como-usar) • [Tecnologias](#-tecnologias)
-
-</div>
-
----
-
-## 📋 Sobre o Projeto
-
-Sistema desktop desenvolvido em Python com PyQt6 para gerenciamento completo de confeitarias. Oferece controle de pedidos, produtos, clientes, produção em tempo real e analytics com dashboard interativo. **Sistema 100% local, sem dependências de internet.**
-
-### ✨ Destaques
-
-- 🎨 **5 Temas Visuais** - Escuro, Claro, Rosa, Roxo e Azul
-- 📊 **Dashboard Completo** - Estatísticas, gráficos e análises em tempo real
-- 📱 **Painel de Cozinha Web** - Acesso mobile para equipe de produção
-- 💾 **Backup Automático** - Proteção de dados com backups periódicos
-- 🔐 **Multi-usuário** - Sistema de login com perfis Admin e Comum
-- 🌐 **Rede Local** - Compartilhamento de banco entre múltiplos computadores
-- 🏠 **100% Local** - Funciona sem internet
-
----
-
-## 🚀 Funcionalidades
-
-### 📊 Dashboard Analytics
-- **Cards de Resumo**: Total de vendas, pedidos em produção, prontos e clientes
-- **Gráfico de Vendas**: Análise dos últimos 6 meses com valores em R$
-- **Gráfico de Status**: Distribuição visual dos pedidos por status
-- **Top 10 Produtos**: Ranking dos produtos mais vendidos com receita total
-
-### 🛒 Gestão de Pedidos
-- Criação rápida de pedidos com seleção de cliente e produto
-- Status personalizáveis: Pendente, Produção, Pronto, Entregue, Cancelado
-- Etiquetas: Comum, Urgente, VIP, Personalizado
-- Cálculo automático de valores com preços cadastrados
-- Reserva automática de estoque
-- Filtros por status, data e cliente
-- Exportação para Excel
-
-### 🍰 Gestão de Produtos
-- Cadastro completo com nome, tamanho e preço
-- Controle de estoque em tempo real
-- Valores em Real (R$) com formatação brasileira
-- Busca rápida por nome
-- Edição e exclusão com confirmação
-
-### 👥 Gestão de Clientes
-- Cadastro com nome, telefone e email
-- Busca inteligente
-- Histórico de pedidos por cliente
-- Edição e exclusão segura
-
-### 📱 Painel de Cozinha (Web)
-- Acesso via navegador (mobile/desktop)
-- Lista de pedidos em produção em tempo real
-- Botão para marcar pedidos como prontos
-- Auto-refresh a cada 2 segundos
-- Exibição de logo da empresa personalizada
-- URL: `http://IP_DO_SERVIDOR:5000`
-
-### 🏢 Personalização da Empresa
-- Nome da empresa configurável
-- Upload de logo customizado (PNG/JPG)
-- Logo exibida no sistema e painel web
-
-### 🔐 Sistema de Usuários
-- **Perfil Admin**: Acesso total ao sistema
-- **Perfil Comum**: Acesso restrito (sem configurações sensíveis)
-- Login com memorização de credenciais (opcional)
-- Senha criptografada com bcrypt
-
-### 💾 Backup e Segurança
-- Backup manual do banco de dados
-- Backup automático a cada hora
-- Exportação em formato ZIP
-- Preservação de configurações e logs
-
-### 🎨 Temas Visuais
-1. **🌙 Tema Escuro** - Ideal para ambientes com pouca luz
-2. **☀️ Tema Claro** - Visual clean e profissional
-3. **🌸 Tema Rosa** - Estilo romântico e suave
-4. **💜 Tema Roxo** - Elegante e moderno
-5. **💙 Tema Azul** - Profissional e confiável
-
----
-
-## 💻 Instalação
-
-### Requisitos do Sistema
-- **Windows** 10/11 (64-bit)
-- **Python** 3.10 ou superior
-- **4GB RAM** mínimo
-- **500MB** espaço em disco
-
-### Instalação via Código-Fonte
-
-1. **Obtenha os Arquivos**
-   - Copie a pasta do sistema para o local desejado
-
-2. **Crie Ambiente Virtual**
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate  # Windows
-   ```
-
-3. **Instale Dependências**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Execute o Sistema**
-   ```bash
-   python Confeitaria.py
-   ```
-
-5. **Primeiro Acesso**
-   ```
-   Usuário: admin
-   Senha: admin
-   ```
-   ⚠️ **Importante**: Altere a senha padrão em Configurações
-
----
-
-## 🎯 Como Usar
-
-### Iniciando o Sistema
-
-1. **Login**
-   - Execute o programa
-   - Digite usuário e senha
-   - Marque "Lembrar credenciais" (opcional)
-   - Clique em "Entrar"
-
-2. **Dashboard**
-   - Primeira página ao logar
-   - Visualize estatísticas em tempo real
-   - Acompanhe vendas e status dos pedidos
-
-3. **Navegação**
-   - Use o menu lateral esquerdo
-   - Dashboard, Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
-
-### Configurações Importantes
-
-**Tema Visual**
-- Configurações → Aparência
-- Escolha entre 5 temas disponíveis
-- Salvo automaticamente
-
-**Empresa**
-- Configurações → Empresa
-- Nome da empresa
-- Upload de logo (PNG/JPG)
-
-**Backup**
-- Configurações → Backup
-- Backup manual: Clique em "Fazer Backup"
-- Automático: A cada 1 hora
-
-**Atualização**
-- Configurações → Atualização do Sistema
-- Clique "Verificar Atualizações"
-- Veja changelog e atualize
-
----
-
-## 🔄 Atualização do Sistema
-
-Não há atualizador automático: cada nova versão é distribuída como um **instalador novo**
-(`output/Confeitaria_Setup_<versão>.exe`). O instalador preserva banco de dados,
-configurações, logs e backups em `AppData\Local\Confeitaria`.
-
-### Publicar uma nova versão
-
-1. Edite e teste: `python Confeitaria.py` (use uma **cópia** do banco, nunca o `data/confeitaria.db` real)
-2. Atualize a versão e o changelog em `version.json`
-3. Gere executável + instalador: `build.bat` (veja [docs/GUIA_DISTRIBUICAO.md](docs/GUIA_DISTRIBUICAO.md))
-4. Commit e push:
-   ```bash
-   git add .
-   git commit -m "v1.x.y - descrição"
-   git push origin main
-   ```
-
----
-
-## 🛠️ Tecnologias
-
-### Core
-- **Python 3.12** - Linguagem principal
-- **PyQt6 6.6.1** - Framework de interface gráfica
-- **SQLite 3** - Banco de dados local
-
-### Interface
-- **QtAwesome** - Ícones vetoriais (Phosphor Icons)
-- **QSS** - 5 temas gerados a partir de paletas (`ui/theme/qss.py`)
-- **PyQt6-Charts** - Gráficos do Dashboard
-
-### Backend
-- **Flask 3.0** - Servidor web para painel de cozinha
-- **Flask-CORS** - Suporte a requisições cross-origin
-- **bcrypt** - Criptografia de senhas
-
-### Dados
-- **openpyxl** - Exportação para Excel
-- **PyYAML** - Configurações em YAML
-
-### Build
-- **PyInstaller** - Compilação para executável
-- **Inno Setup** - Criação de instalador Windows
-
----
-
-## 📁 Estrutura do Projeto
+## Estrutura
 
 ```
 app/
-├── Confeitaria.py          # Ponto de entrada (python Confeitaria.py / PyInstaller)
-├── app.py                  # Inicialização: banco, tradução pt-BR, tema, login, janela
-├── version.json            # Versão atual + changelog
-├── requirements.txt        # Dependências Python
-├── build.bat               # Gera executável (PyInstaller) + instalador (Inno Setup)
-├── Confeitaria.spec        # Configuração do PyInstaller
-├── Confeitaria.iss         # Script do instalador (Inno Setup)
-├── confeitaria.db          # Banco de exemplo embutido no instalador (não versionado)
-│
-├── core/                   # Regras e dados (sem interface)
-│   ├── config.py           # config.yaml e caminho do banco
-│   ├── database.py         # Conexão SQLite (WAL, transações)
-│   ├── extended_database.py# Schema, migrações, índices, auditoria, reserva de estoque
-│   ├── paths.py            # Pastas do app, recursos empacotados, backups
-│   ├── security.py         # Hash/verificação de senhas
-│   ├── formatting.py       # Formatação de preço, data, tamanho
-│   ├── stock_categories.py # Categorias de movimentação de estoque
-│   ├── network.py          # Caminhos de rede e validação assíncrona do banco
-│   ├── logger.py / models.py / services.py   # Log, modelos e autenticação
-│   └── web_server.py       # Servidor Flask do painel da cozinha
-│
-├── ui/                     # Interface PyQt6
-│   ├── main_window.py      # Janela principal (menu lateral, cabeçalho, páginas)
-│   ├── pages/              # Uma página por arquivo (dashboard, pedidos, produtos...)
-│   │   └── base.py         # Página base: título + auto-refresh só quando visível
-│   ├── dialogs/            # Diálogos (pedido, cliente, produto, banco de dados...)
-│   ├── widgets/            # Componentes: StatCard, gráficos (QtCharts), toast
-│   ├── theme/qss.py        # Temas: paletas + um único modelo de QSS
-│   ├── icons.py            # Ícones Phosphor (qtawesome)
-│   └── messages.py         # Caixas de mensagem
-│
-├── web/                    # Painel web da cozinha (HTML)
-├── assets/
-│   ├── icons/              # Ícone/logo padrão (neutro)
-│   ├── clientes/<nome>/    # Logos de cada cliente (gih, marilia...)
-│   └── company/            # Logo escolhido na instalação local (não versionado)
-├── tools/                  # populate_database.py, convert_logo_to_ico.py
-├── docs/                   # Guia de distribuição
-│
-│   # Gerados / locais — fora do git:
-├── data/                   # Banco e config.yaml da instalação local
-├── backups/, Backup_Clientes/  # Backups do banco
-├── logs/                   # Logs de execução
-├── build/, dist/           # Saída temporária do PyInstaller
-└── output/                 # Instaladores gerados
+├── desktop/              Interface (Tauri 2 + React/TypeScript) — ver desktop/README.md
+├── servico_local.py      Motor: serviço HTTP local que a interface inicia em segundo plano
+├── api/                  Rotas do motor (pedidos, produção, estoque, relatórios, banco, licença…)
+├── core/                 Regras e dados: banco SQLite, migrações, estoque, auditoria,
+│                         configuração, licença DWM, painel da cozinha (web_server.py)
+├── web/                  Painel da cozinha (celular/tablet na mesma rede, porta 5000)
+├── assets/icons/         Logo padrão (neutro);  assets/clientes/<nome>/ logos de cada cliente
+├── tests/                Testes do motor e da licença (sempre com cópia de banco)
+├── tools/                populate_database.py (gera banco de demonstração)
+├── motor.spec            Empacotamento do motor (PyInstaller) para o instalador
+├── requirements.txt      Dependências do motor
+└── version.json          Versão e novidades
 ```
 
-> O nome e o logo da confeitaria vêm da tabela `company` (Configurações → Empresa),
-> nunca fixos no código — o mesmo build serve para qualquer cliente.
+Fora do git (locais): `data/` (banco e config.yaml em desenvolvimento), `backups/`,
+`Backup_Clientes/`, `logs/`, `build/`, `dist/`.
 
-### Temas
-
-Os 5 temas (Claro, Escuro, Rosa, Roxo, Azul) são gerados por `ui/theme/qss.py` a partir
-de paletas de cores. Para ajustar o visual de todos, edite o modelo `_TEMPLATE`; para um
-tema novo, adicione uma `Palette` em `PALETTES`. Widgets herdam o tema global — evite
-`setStyleSheet` com cores fixas em diálogos e páginas.
-
----
-
-## 🌐 Painel de Cozinha (Web)
-
-### Configuração
-
-O servidor web inicia automaticamente na porta **5000**.
-
-**Descobrir IP do Servidor:**
-```bash
-ipconfig
-# Procure por "Endereço IPv4"
-# Exemplo: 192.168.1.100
-```
-
-**Acessar no Navegador:**
-```
-http://192.168.1.100:5000
-```
-
-### Liberar Firewall (Windows)
+## Desenvolvimento
 
 ```powershell
-# Execute como Administrador
-.\liberar_porta_5000.ps1
+py -m pip install -r requirements.txt
+cd desktop
+npm install
+npm run tauri dev
 ```
 
----
+Detalhes da interface, da arquitetura e da licença DWM em [desktop/README.md](desktop/README.md).
 
-## 🐛 Troubleshooting
+> Teste sempre com uma **cópia** do banco: defina `CONFEITARIA_DB=C:\Temp\copia.db` (e,
+> para não tocar no config.yaml real, `CONFEITARIA_DATA_DIR=C:\Temp\dados`).
 
-### "Erro ao conectar ao banco"
-```bash
-# Restaure backup
-# Configurações → Banco de Dados → Restaurar Backup
+## Testes
+
+```powershell
+py tests\test_servico_local.py C:\Temp\copia.db    # todas as rotas do motor
+py tests\test_licenca.py                           # licença DWM (servidor falso)
+py tests\test_licenca_motor.py C:\Temp\copia.db    # somente leitura de ponta a ponta
 ```
 
-### Logs do Sistema
+## Instalador
+
+```powershell
+cd desktop
+powershell -ExecutionPolicy Bypass -File scripts\gerar-instalador.ps1
 ```
-%LOCALAPPDATA%\Confeitaria\logs\
-```
 
----
+Gera `desktop\Output\Confeitaria_<versão>_x64-setup.exe` (por usuário, sem admin). Não há
+atualizador automático: cada versão nova é um instalador novo. Instalado, o app usa a mesma
+pasta de dados da versão 1.x (`%LOCALAPPDATA%\Confeitaria`), então atualizar não perde dados.
 
-## 📝 Changelog
+## Versão anterior
 
-O histórico de cada versão fica em [`version.json`](version.json) e no `git log`.
-
----
-
-## 📚 Documentação Adicional
-
-- [docs/GUIA_DISTRIBUICAO.md](docs/GUIA_DISTRIBUICAO.md) - Build e distribuição do instalador
-
----
-
-## 👨‍💻 Desenvolvido por
-
-**DWM Systems Developer**
-
-Sistema Local para Gestão de Confeitarias
-
----
-
-<div align="center">
-
-Made with ❤️ and ☕ by DWM Systems
-
-</div>
+A interface PyQt (versão 1.x) foi removida; o código está na tag `pyqt-final` do git.

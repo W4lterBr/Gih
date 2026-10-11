@@ -1,18 +1,11 @@
-PyQt6>=6.6.1
-PyQt6-Charts>=6.6.1
-PyQt6-Qt6>=6.6.1
-PyQt6-sip>=13.4.0
-bcrypt>=5.0.0
-packaging>=24.2
-qtawesome>=1.3.0
-openpyxl>=3.1.2
-reportlab>=4.0.0
-pyyaml>=6.0.1
-pyperclip>=1.8.2
-# Servidor web para painel da cozinha
-Flask>=3.0.0
+# Motor da Confeitaria (servico_local.py) — Python 3.10+
+bcrypt>=5.0.0          # senhas
+pyyaml>=6.0.1          # config.yaml
+psutil>=5.9            # encerra o motor quando a janela fecha
+openpyxl>=3.1.2        # relatórios e exportações em Excel
+reportlab>=4.0.0       # relatórios em PDF
+Pillow>=10.0           # logo nos relatórios Excel
+Flask>=3.0.0           # painel da cozinha (porta 5000)
 Flask-CORS>=4.0.0
-# Opcional - apenas para criar executável
+# Só para gerar o instalador (motor.spec)
 pyinstaller>=6.1.0
-# Opcional - para gráficos adicionais
-matplotlib>=3.8.0

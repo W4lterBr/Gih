@@ -1,24 +1,16 @@
 {
-  "version": "1.15.0",
-  "release_date": "2026-09-06",
+  "version": "2.0.0",
+  "release_date": "2026-10-11",
   "changelog": [
-    "🛠️ CORREÇÕES DE INTEGRIDADE DE DADOS",
-    "✅ Painel da Cozinha: editar quantidade de pedido agora ajusta o estoque corretamente",
-    "✅ Pedidos com múltiplos produtos ganham um ID de lote único (evita agrupar/excluir lotes errados)",
-    "✅ Reparo e restauração de banco atualizam o schema automaticamente",
-    "✅ Corrigida corrupção do campo \"Tamanho\" ao editar itens de Produção",
-    "✅ Editar data de entrega de um pedido futuro para hoje reserva o estoque na hora",
-    "✅ Criação de pedido com múltiplos produtos: desfaz tudo automaticamente se algum item falhar",
-    "✅ Corrigida condição de corrida que podia deixar estoque negativo em Movimentação",
-    "✅ Exclusão de usuário bloqueada para o próprio usuário logado e para o último administrador",
-    "✅ Edição de produto agora registra a mudança de estoque em Movimentação",
-    "✅ Excluir cliente com pedidos vinculados avisa em vez de falhar em silêncio",
-    "✅ Importar pedidos para Produção pede confirmação antes de substituir a lista atual",
-    "✅ Nomes de usuário e etiquetas duplicados (maiúsc./minúsc.) tratados corretamente",
-    "🖱️ SELEÇÃO MÚLTIPLA",
-    "✅ Excluir com vários itens selecionados agora remove todos, não só o último clicado",
-    "✅ Corrigido em Produtos, Clientes, Movimentação e Produção"
+    "Interface nova no padrão do Busca XML Desktop (Tauri + React): abre em menos de 1 segundo, instalador de 22 MB",
+    "Início com entregas do dia, pedidos por dia e estoque baixo; paleta de comandos (Ctrl+K) e atalhos",
+    "Pedidos: períodos rápidos, busca por etiqueta, painel lateral, ações em massa; editar não perde mais a etiqueta",
+    "Produção editável na própria lista; importar pedidos inclui 'Pagamento na Retirada'",
+    "Relatórios de Entregas, Fechamento (com filtro de etiqueta) e Produção em PDF e Excel",
+    "Backup consistente, restauração sem reiniciar e backup automático configurável",
+    "Licença DWM: situação das faturas, aviso de vencimento e modo somente leitura com fatura em atraso",
+    "Mesmo banco de dados da versão 1.x: atualizar não perde pedidos, clientes nem produtos"
   ],
-  "required_version": "1.15.0",
+  "required_version": "2.0.0",
   "min_python_version": "3.10"
 }

@@ -14,7 +14,7 @@
 # do motor quebrariam.
 #
 # Instalado (frozen), core/config.py usa %LOCALAPPDATA%\Confeitaria como pasta de dados:
-# o MESMO banco e config.yaml do app PyQt instalado.
+# o MESMO banco e config.yaml da versão 1.x instalada (a atualização não perde dados).
 
 from pathlib import Path
 

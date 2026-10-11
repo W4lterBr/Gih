@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Pedidos: listagem (com agrupamento de lotes), criação, edição, exclusão e relatório.
 
-Formato no banco igual ao do app PyQt, para os dois (e o painel da cozinha) conviverem:
+Formato no banco igual ao da versão 1.x (bancos existentes continuam valendo) e ao que o
+painel da cozinha lê:
 - uma linha em `orders` por produto; pedido com vários produtos = "lote", marcado em
   `notes` com o prefixo `LOTE:<8 hex>:<N> itens | `;
 - `order_number` = `id`; `total` = 0.0 (o app não controla preço por pedido);
@@ -293,7 +294,7 @@ def expandir_lotes(db, alvo: list[int]) -> list[int]:
 @rota("POST", "/pedidos/excluir")
 def excluir_pedidos(p: Pedido) -> dict:
     """Devolve o estoque dos itens já reservados e apaga as movimentações do pedido
-    (mesmo comportamento do app PyQt)."""
+    (mesmo comportamento da versão 1.x)."""
     db = contexto.db()
     alvo = expandir_lotes(db, ids(p.c("ids")))
     with db.transaction():
@@ -324,7 +325,7 @@ def _logo_empresa(db) -> tuple[str, str | None]:
     nome = (r[0]["name"] if r else None) or "Confeitaria"
     logo = r[0]["logo_path"] if r else None
     if not logo or not os.path.isfile(logo):
-        for c in (os.path.join(RESOURCE_DIR, "assets", "icons", "logo.png"), os.path.join(RESOURCE_DIR, "web", "logo.png")):
+        for c in (os.path.join(RESOURCE_DIR, "assets", "icons", "logo.png"),):
             if os.path.isfile(c):
                 logo = c
                 break

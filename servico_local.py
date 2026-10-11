@@ -3,7 +3,7 @@
 Motor da Confeitaria: serviço local HTTP para a interface nova (Tauri, em desktop/).
 
 A interface inicia este processo em segundo plano e conversa com ele por HTTP em
-127.0.0.1. As regras de negócio são as mesmas do app PyQt (core/): reserva e baixa
+127.0.0.1. As regras de negócio ficam em core/: reserva e baixa
 de estoque, auditoria, migrações do banco.
 
 Uso (normalmente quem chama é o Tauri, não uma pessoa):

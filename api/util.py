@@ -43,7 +43,7 @@ def inteiro(valor: Any, campo: str, minimo: Optional[int] = None, maximo: Option
 
 
 def texto(valor: Any) -> Optional[str]:
-    """strip(); vazio vira None (como os diálogos do app PyQt gravavam)."""
+    """strip(); vazio vira None (como a versão 1.x gravava)."""
     if valor is None:
         return None
     s = str(valor).strip()

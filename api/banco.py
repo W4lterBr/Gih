@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Banco de dados: informações, backup, restauração, troca de arquivo e reparo.
 
-Diferenças em relação ao app PyQt (deliberadas, por segurança):
+Diferenças em relação à versão 1.x (deliberadas, por segurança):
 - O backup usa a API de backup do SQLite (cópia consistente), não a cópia crua do
   arquivo em uso; o ZIP leva o banco e o config.yaml.
 - A restauração fecha a conexão do motor antes de substituir o arquivo e reabre depois
@@ -127,7 +127,7 @@ _estado_auto: dict = {"ultimo": None}
 
 
 def _laco_backup_automatico() -> None:
-    time.sleep(300)  # primeiro backup 5 min após abrir (como no app PyQt)
+    time.sleep(300)  # primeiro backup 5 min após abrir (como na versão 1.x)
     while True:
         cfg = {**CONFIG_BACKUP_PADRAO, **(load_config().get("auto_backup") or {})}
         horas = max(1, min(24, int(cfg.get("interval_hours") or 1)))

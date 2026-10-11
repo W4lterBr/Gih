@@ -23,7 +23,7 @@ usuario: Optional[dict[str, Any]] = None  # {"id", "username", "role"} após o l
 
 def caminho_banco() -> str:
     """Caminho do banco: CONFEITARIA_DB (testes/desenvolvimento) ou o configurado
-    pelo app (core/config.py), o mesmo que a interface PyQt usa."""
+    pelo app (core/config.py) — o mesmo da versão 1.x instalada."""
     env = os.environ.get("CONFEITARIA_DB")
     if env:
         return os.path.abspath(env)

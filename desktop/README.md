@@ -2,12 +2,11 @@
 
 A interface nova da Confeitaria, no mesmo padrão do **Busca XML Desktop**: janela nativa
 (Tauri 2 + WebView2 do Windows), interface React + TypeScript e a identidade visual DWM
-(claro/escuro). Substitui a interface PyQt6 (`../Confeitaria.py` + `../ui/`), que continua
-no repositório até a nova ser aprovada em uso real.
+(claro/escuro). Substituiu a interface PyQt6 da versão 1.x (código na tag `pyqt-final`).
 
 As **regras de negócio continuam em Python**, na raiz do projeto (`../core/`), servidas pelo
 motor `../servico_local.py` (rotas em `../api/`): reserva e baixa de estoque, lotes de pedido,
-auditoria, migrações do banco, painel da cozinha. O banco é o mesmo do app PyQt.
+auditoria, migrações do banco, painel da cozinha. O banco é o mesmo da versão 1.x.
 
 ## Como rodar
 
@@ -41,7 +40,7 @@ $env:VITE_MOTOR_PORTA="51888"; $env:VITE_MOTOR_TOKEN="dev"; npm run dev
 └──────────────┬───────────────────────────────────────────────────────────────┘
                │ HTTP local (token por sessão)
 ┌──────────────▼───────────────────────────────────────────────────────────────┐
-│ servico_local.py + api/  ─ regras de core/ ─ SQLite (mesmo banco do app PyQt)│
+│ servico_local.py + api/  ─ regras de core/ ─ SQLite (mesmo banco da v1.x)   │
 │ tarefas: painel da cozinha (Flask :5000), reserva de estoque 1/h, backup auto │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -126,7 +125,7 @@ Saída em `Output\` (instalador NSIS por usuário, sem admin). O motor vem de `.
 (PyInstaller) e é copiado para `src-tauri\motor\` (fora do git). Sem atualizador automático:
 cada versão nova é um instalador novo.
 
-## Diferenças em relação ao app PyQt
+## Diferenças em relação à versão 1.x (PyQt)
 
 - Corrigido: editar pedido não perde mais a etiqueta; edição de pedido e de lote é atômica;
   busca inclui a etiqueta; "Todos" não tem limite de datas; segunda-feira é avisada no

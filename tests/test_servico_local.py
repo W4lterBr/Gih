@@ -90,7 +90,7 @@ def main() -> int:
         checar(c.req("GET", "/saude", token="errado")[0] == 401, "token errado é recusado")
         checar(c.req("GET", "/clientes")[0] == 401, "rota protegida exige login")
         checar(c.req("POST", "/login", {"usuario": "admin", "senha": "x"})[0] == 401, "senha errada é recusada")
-        ruim = urllib.request.Request(c.base + "/login", data=b'{"x": "\q', method="POST", headers={"X-Token": TOKEN})
+        ruim = urllib.request.Request(c.base + "/login", data=rb'{"x": "\q', method="POST", headers={"X-Token": TOKEN})
         try:
             urllib.request.urlopen(ruim, timeout=10)
             st_ruim = 200

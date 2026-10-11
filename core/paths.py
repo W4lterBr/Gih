@@ -17,7 +17,7 @@ else:                               # script .py
 RESOURCE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
 
 
-# Caminho robusto do banco (corrige ambientes sem __file__ e PyInstaller)
+# Pasta de dados de execução (logs de ações, backups)
 def get_base_directory() -> str:
     """
     Determina o diretório base da aplicação de forma robusta.
@@ -27,7 +27,6 @@ def get_base_directory() -> str:
         # Se estamos executando via PyInstaller
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
             # Para dados do usuário, usa o diretório dos dados de aplicação
-            import tempfile
             app_data_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Confeitaria")
             os.makedirs(app_data_dir, exist_ok=True)
             return app_data_dir
@@ -44,16 +43,4 @@ def get_base_directory() -> str:
 base_dir = get_base_directory()
 
 
-# Usar função para sempre pegar o caminho correto (configurado ou padrão)
-def get_db_path():
-    """Retorna o caminho do banco sempre atualizado (configurado ou padrão)"""
-    try:
-        from core.config import get_database_path
-        return get_database_path()
-    except Exception:
-        # Fallback apenas se core.config não estiver disponível
-        return os.path.join(APP_DIR, "confeitaria.db")
-
-
-DB_PATH = get_db_path()  # Inicialização para compatibilidade
 BACKUP_DIR = os.path.join(base_dir, "backups")

@@ -10,7 +10,7 @@ from api.pedidos import separar_lote
 from api.util import agora, data_iso, hoje_iso, ids, inteiro, linhas, texto
 
 # Pedidos que entram na lista ao importar: todos os do dia que ainda vão ser entregues.
-# (O app PyQt deixava de fora "Pagamento na Retirada", que também precisa ser produzido.)
+# (A versão 1.x deixava de fora "Pagamento na Retirada", que também precisa ser produzido.)
 _STATUS_FORA = ("Entregue", "Cancelado", "cancelled", "completed", "Concluído")
 
 
@@ -57,7 +57,7 @@ def adicionar_item(p: Pedido) -> dict:
 @rota("PUT", "/producao/{id}")
 def editar_item(p: Pedido) -> dict:
     """Mudar a quantidade lança a diferença no estoque como movimentação 'Produção'
-    (mesma regra do app PyQt e do painel da cozinha)."""
+    (mesma regra do painel da cozinha)."""
     db = contexto.db()
     iid = p.id()
     r = db.query("SELECT product_id, quantity FROM production_items WHERE id=?", (iid,))

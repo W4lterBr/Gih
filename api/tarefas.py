@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tarefas de fundo do motor: painel da cozinha e rotinas periódicas.
 
-Equivalem ao que a janela principal do app PyQt fazia com QTimer:
+Rotinas que rodam enquanto o app está aberto:
 - painel da cozinha (Flask, porta 5000) em thread própria;
 - reserva de estoque de pedidos cuja data de entrega chegou: 2 s após abrir e a cada hora;
 - backup automático (ver api.banco.backup_automatico).
