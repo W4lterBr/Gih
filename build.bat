@@ -1,8 +1,8 @@
 @echo off
 REM ============================================================
-REM  BUILD PRINCIPAL - CONFEITARIA v1.12.0
+REM  BUILD PRINCIPAL - CONFEITARIA v1.15.0
 REM  Gera o executavel e o instalador completo
-REM  Atualizado: 2025-12-03
+REM  Atualizado: 2026-09-06
 REM ============================================================
 
 setlocal EnableDelayedExpansion
@@ -10,7 +10,8 @@ setlocal EnableDelayedExpansion
 echo.
 echo ============================================
 echo  BUILD - SISTEMA CONFEITARIA
-echo  Versao 1.12.0 - Build %date% %time%
+echo  Versao 1.15.0 - Sistema Local
+echo  Build %date% %time%
 echo ============================================
 echo.
 
@@ -38,18 +39,30 @@ if exist "venv310\Scripts\python.exe" (
     goto :python_found
 )
 
-REM Tentar Python do sistema
+REM Tentar Python do sistema (comando "python")
 python --version >nul 2>&1
-if errorlevel 1 (
-    echo ❌ ERRO: Python não encontrado!
-    echo    Crie um ambiente virtual com: python -m venv .venv
-    echo    Ou instale Python 3.10 ou superior.
-    pause
-    exit /b 1
+if not errorlevel 1 (
+    echo ⚠️  Usando Python do sistema
+    set "PYTHON_CMD=python"
+    set "PIP_CMD=pip"
+    goto :python_found
 )
-echo ⚠️  Usando Python do sistema
-set "PYTHON_CMD=python"
-set "PIP_CMD=pip"
+
+REM Fallback: launcher "py" (comum em instalações do python.org no Windows,
+REM onde "python" sozinho não está no PATH mas "py" e "pip" estão)
+py --version >nul 2>&1
+if not errorlevel 1 (
+    echo ⚠️  Usando launcher "py" do sistema
+    set "PYTHON_CMD=py"
+    set "PIP_CMD=pip"
+    goto :python_found
+)
+
+echo ❌ ERRO: Python não encontrado!
+echo    Crie um ambiente virtual com: python -m venv .venv
+echo    Ou instale Python 3.10 ou superior.
+pause
+exit /b 1
 
 :python_found
 REM Verificar se Python funciona
@@ -183,14 +196,10 @@ if !ICON_WARNING!==0 (
 )
 echo.
 echo ⚙️  Configurações do build:
-echo    • Sistema de auto-atualização 100%% funcional
-echo    • Comunicação com GitHub API validada
 echo    • Sistema de LOGS completo em AppData\Local\Confeitaria\logs\
-echo    • Token GitHub em texto simples (github_token.txt)
-echo    • Sistema de licenciamento integrado
-echo    • Painel web embutido (porta 5000)
+echo    • Painel web embutido (porta 5000, protegido por PIN)
 echo    • Suporte a temas claro/escuro
-echo    • Launcher externo para atualizações remotas
+echo    • Sistema 100%% local (sem GitHub/licenciamento remoto)
 echo.
 
 "%PYTHON_CMD%" -m PyInstaller Confeitaria.spec --clean --noconfirm
@@ -288,7 +297,7 @@ REM ============================================================
 :success_complete
 echo ============================================
 echo  ✅ BUILD COMPLETO COM SUCESSO!
-echo  Versão 1.11.32 - %date% %time%
+echo  Versão 1.15.0 - %date% %time%
 echo ============================================
 echo.
 echo 📦 Arquivos gerados:
@@ -299,29 +308,26 @@ for %%f in (output\Confeitaria_Setup_*.exe) do (
     )
 )
 echo.
-echo 🆕 Novidades desta versão:
-echo    ✅ Sistema de atualização 100%% funcional
-echo    ✅ Fix crítico: URL do GitHub corrigida
-echo    ✅ Comunicação com API validada
-echo    ✅ Sistema de LOGS completo em AppData
-echo    ✅ DeprecationWarning do Flask corrigido
-echo    ✅ Pronto para produção
+echo 🆕 Novidades desta versão (v1.15.0):
+echo    ✅ Correções de integridade: estoque, lotes de pedidos, reparo/restauração
+echo    ✅ Excluir com múltipla seleção corrigido (Produtos/Clientes/Movimentação/Producao)
+echo    ✅ Editar data de pedido futuro para hoje reserva o estoque na hora
+echo    ✅ Corrigida condição de corrida que podia deixar estoque negativo
+echo    ✅ Exclusão de usuário bloqueada para si mesmo e para o último administrador
 echo.
 echo 🎉 Pronto para distribuição!
 echo.
 echo 💡 Próximos passos:
 echo    1. Teste o executável: dist\Confeitaria\Confeitaria.exe
-echo    2. github_token.txt já está incluído automaticamente
-echo    3. Teste a verificação de atualização
-echo    4. Teste o instalador em uma máquina limpa
-echo    5. Distribua para os usuários
+echo    2. Teste o instalador em uma máquina limpa
+echo    3. Distribua para os usuários
 echo.
 goto :end
 
 :success_exe_only
 echo ============================================
 echo  ✅ EXECUTÁVEL CRIADO COM SUCESSO!
-echo  Versão 1.11.32 - %date% %time%
+echo  Versão 1.15.0 - %date% %time%
 echo ============================================
 echo.
 echo 📦 Arquivo gerado:
@@ -329,10 +335,10 @@ echo    • Executável: dist\Confeitaria\Confeitaria.exe
 echo.
 echo ⚠️  Instalador não foi criado (Inno Setup não disponível)
 echo.
-echo 🆕 Novidades desta versão:
-echo    ✅ Sistema de atualização funcional
-echo    ✅ Logs completos em AppData
-echo    ✅ URL do GitHub corrigida
+echo 🆕 Novidades desta versão (v1.15.0):
+echo    ✅ Correções de integridade: estoque, lotes de pedidos, reparo/restauração
+echo    ✅ Excluir com múltipla seleção corrigido em várias telas
+echo    ✅ Exclusão de usuário bloqueada para si mesmo e para o último administrador
 echo.
 echo 💡 Próximos passos:
 echo    1. Teste o executável: dist\Confeitaria\Confeitaria.exe

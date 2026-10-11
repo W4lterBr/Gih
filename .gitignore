@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build / instalador
+build/
+dist/
+output/
+
+# Dados locais (nunca versionar dados de clientes)
+*.db
+*.db-shm
+*.db-wal
+data/config.yaml
+backups/
+Backup_Clientes/
+logs/
+*.log
+
+# Segredos
+github_token.txt
+*.token
+.env
+
+# Editores / SO
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+.DS_Store

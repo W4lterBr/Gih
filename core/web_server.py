@@ -4,7 +4,7 @@ Servidor Web Flask para Painel da Cozinha
 Permite acesso via rede local para atualização de estoque de produtos
 """
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, g
 from flask_cors import CORS
 import sqlite3
 import os
@@ -20,27 +20,65 @@ logger = logging.getLogger(__name__)
 class WebServer:
     """Servidor web Flask para o painel da cozinha"""
     
-    def __init__(self, db_path: str, web_dir: str, port: int = 5000):
+    def __init__(self, db_path: str, web_dir: str, port: int = 5000, access_token: str = None):
         """
         Inicializa o servidor web
-        
+
         Args:
             db_path: Caminho para o banco de dados SQLite
             web_dir: Diretório contendo os arquivos web (HTML, CSS, JS)
             port: Porta para o servidor (padrão: 5000)
+            access_token: PIN exigido em toda chamada à API (/api/*). Se None,
+                a API fica sem autenticação - só use assim em ambiente confiável.
         """
         self.db_path = db_path
         self.web_dir = web_dir
         self.port = port
+        self.access_token = access_token
         self.app = Flask(__name__)
         CORS(self.app)  # Permite requisições de qualquer origem
-        
+
         # Configurar rotas
         self._setup_routes()
-        
+        self._setup_auth()
+        self._setup_db_teardown()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Abre (ou reaproveita) a conexão SQLite da requisição atual.
+
+        Guardada em flask.g e fechada no teardown_request - isso garante que a
+        conexão é fechada mesmo quando a rota retorna cedo em algum "if" ou
+        lança uma exceção, sem precisar de try/finally repetido em cada rota
+        (antes disso, várias rotas vazavam a conexão nesses caminhos de erro).
+        """
+        if 'db_conn' not in g:
+            g.db_conn = sqlite3.connect(self.db_path)
+        return g.db_conn
+
+    def _setup_db_teardown(self):
+        @self.app.teardown_request
+        def close_db_connection(exception=None):
+            conn = g.pop('db_conn', None)
+            if conn is not None:
+                conn.close()
+
+    def _setup_auth(self):
+        """Exige o PIN de acesso (header X-Panel-Token ou ?token=) em toda a API"""
+        if not self.access_token:
+            return
+
+        @self.app.before_request
+        def check_token():
+            if not request.path.startswith('/api/'):
+                return None  # páginas/estáticos ficam livres, só a API é protegida
+            supplied = request.headers.get('X-Panel-Token') or request.args.get('token')
+            if supplied != self.access_token:
+                return jsonify({'success': False, 'error': 'PIN de acesso inválido ou ausente'}), 401
+            return None
+
     def _setup_routes(self):
         """Configura as rotas da API"""
-        
+
         # Página de seleção de acesso
         @self.app.route('/')
         def root():
@@ -85,7 +123,7 @@ class WebServer:
         def get_products():
             """Retorna lista de todos os produtos"""
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
@@ -124,17 +162,18 @@ class WebServer:
         # API: Listar produtos com estoque disponível (Pronta Entrega)
         @self.app.route('/api/ready-stock', methods=['GET'])
         def get_ready_stock():
-            """Retorna lista de produtos em pronta entrega (stock > 0)"""
+            """Retorna todos os produtos (inclusive com stock=0, marcados como esgotados
+            no campo 'in_stock' para o front-end exibir) - antes filtrava stock > 0 e o
+            produto simplesmente sumia da lista sem nenhum aviso quando zerava."""
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 cursor.execute("""
                     SELECT id, name, description, size, stock, min_stock
                     FROM products
-                    WHERE stock > 0
-                    ORDER BY name
+                    ORDER BY (stock <= 0), name
                 """)
                 
                 products = []
@@ -168,7 +207,7 @@ class WebServer:
         def get_production():
             """Retorna lista de produção (production_items + orders pendentes)"""
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
@@ -284,7 +323,7 @@ class WebServer:
                         'error': 'Quantidade não pode ser negativa'
                     }), 400
                 
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # Verificar se o produto existe
@@ -334,17 +373,22 @@ class WebServer:
         def update_production_item(item_id):
             """Atualiza a quantidade, tamanho e/ou observações de um item de produção (manual ou pedido)"""
             try:
+                from datetime import datetime
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 data = request.get_json()
-                
-                if 'quantity' not in data and 'size' not in data and 'notes' not in data:
+
+                # "status" só existe para pedidos (tratado mais abaixo), mas precisa
+                # ser aceito aqui também - senão um PUT só com {"status": ...} era
+                # rejeitado com 400 mesmo sendo um caso de uso válido da API.
+                if not any(k in data for k in ('quantity', 'size', 'notes', 'status')):
                     return jsonify({
                         'success': False,
-                        'error': 'Pelo menos um campo ("quantity", "size" ou "notes") é obrigatório'
+                        'error': 'Pelo menos um campo ("quantity", "size", "notes" ou "status") é obrigatório'
                     }), 400
-                
-                conn = sqlite3.connect(self.db_path)
+
+                conn = self._get_conn()
                 cursor = conn.cursor()
-                
+
                 # Verificar se é item manual ou pedido
                 if item_id.startswith('manual_'):
                     # Item da lista manual
@@ -358,10 +402,18 @@ class WebServer:
                             'success': False,
                             'error': 'Item não encontrado'
                         }), 404
-                    
+
+                    if not any(k in data for k in ('quantity', 'size', 'notes')):
+                        # "status" não existe para itens manuais (só para pedidos)
+                        conn.close()
+                        return jsonify({
+                            'success': False,
+                            'error': '"status" não se aplica a itens manuais da lista de produção'
+                        }), 400
+
                     old_quantity = item[2]
                     product_id = item[1]
-                    
+
                     # Preparar campos para atualizar
                     updates = []
                     params = []
@@ -384,6 +436,17 @@ class WebServer:
                             cursor.execute(
                                 "UPDATE products SET stock = stock + ? WHERE id = ?",
                                 (quantity_change, product_id)
+                            )
+                            # Registra em stock_movements para aparecer na tela de
+                            # Movimentação do desktop (antes esse ajuste feito pelo
+                            # painel web não deixava rastro nenhum, só o desktop tinha
+                            # esse registro)
+                            mov_type = 'entrada' if quantity_change > 0 else 'saida'
+                            cursor.execute(
+                                "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
+                                "VALUES (?,?,?,?,?,?,?,?)",
+                                (product_id, mov_type, 'Produção', abs(quantity_change),
+                                 'Ajuste na lista de produção (painel web)', None, now, 'painel-web')
                             )
                             print(f"📦 Estoque atualizado: produto #{product_id} {quantity_change:+d} → nova qtd produzida: {new_quantity}")
                     
@@ -410,20 +473,24 @@ class WebServer:
                 elif item_id.startswith('order_'):
                     # Pedido da tabela orders
                     real_id = int(item_id.replace('order_', ''))
-                    cursor.execute("SELECT id FROM orders WHERE id = ?", (real_id,))
+                    cursor.execute("SELECT id, product_id, quantity, stock_reserved FROM orders WHERE id = ?", (real_id,))
                     order = cursor.fetchone()
-                    
+
                     if not order:
                         conn.close()
                         return jsonify({
                             'success': False,
                             'error': 'Pedido não encontrado'
                         }), 404
-                    
+
+                    old_quantity = order[2]
+                    order_product_id = order[1]
+                    was_reserved = int(order[3] or 0) == 1
+
                     # Atualizar campos
                     updates = []
                     params = []
-                    
+
                     if 'quantity' in data:
                         quantity = int(data['quantity'])
                         if quantity <= 0:
@@ -434,7 +501,26 @@ class WebServer:
                             }), 400
                         updates.append("quantity = ?")
                         params.append(quantity)
-                    
+
+                        # Só ajusta estoque se esse pedido já teve estoque reservado -
+                        # mesma regra do desktop (OrdersPage.edit()). Antes esta rota do
+                        # painel web nunca tocava em products.stock, então editar a
+                        # quantidade de um pedido já reservado pelo celular desincronizava
+                        # o estoque real do sistema permanentemente.
+                        quantity_change = quantity - old_quantity
+                        if was_reserved and quantity_change != 0 and order_product_id:
+                            cursor.execute(
+                                "UPDATE products SET stock = stock - ? WHERE id = ?",
+                                (quantity_change, order_product_id)
+                            )
+                            mov_type = 'saida' if quantity_change > 0 else 'entrada'
+                            cursor.execute(
+                                "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
+                                "VALUES (?,?,?,?,?,?,?,?)",
+                                (order_product_id, mov_type, 'Ajuste de Inventário', abs(quantity_change),
+                                 'Ajuste pedido (painel web)', real_id, now, 'painel-web')
+                            )
+
                     if 'size' in data:
                         size = str(data['size']).strip()
                         updates.append("size = ?")
@@ -450,10 +536,20 @@ class WebServer:
                         if data['status'] in valid_statuses:
                             updates.append("status = ?")
                             params.append(data['status'])
-                    
+
+                    if not updates:
+                        # Sem isso, um status inválido (o único campo enviado) deixava
+                        # "updates" vazio e gerava "UPDATE orders SET  WHERE id=?"
+                        # (SQL inválido) em vez de um erro 400 claro
+                        conn.close()
+                        return jsonify({
+                            'success': False,
+                            'error': 'Nenhum campo válido para atualizar (verifique o valor de "status")'
+                        }), 400
+
                     params.append(real_id)
                     sql = f"UPDATE orders SET {', '.join(updates)} WHERE id = ?"
-                    
+
                     cursor.execute(sql, params)
                     conn.commit()
                     conn.close()
@@ -507,7 +603,7 @@ class WebServer:
                         'error': 'Quantidade deve ser maior que zero'
                     }), 400
                 
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # Verificar se o produto existe
@@ -559,7 +655,7 @@ class WebServer:
         def delete_production_item(item_id):
             """Remove um item da lista de produção"""
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # Verificar se é item manual (apenas itens manuais podem ser excluídos)
@@ -618,7 +714,7 @@ class WebServer:
         def get_products_list():
             """Retorna lista simplificada de produtos para seleção"""
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
@@ -661,7 +757,7 @@ class WebServer:
             - Limpa a tabela production_items
             """
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # 1. Buscar todos os itens da produção
@@ -695,10 +791,11 @@ class WebServer:
                         WHERE id = ?
                     """, (quantity, product_id))
                     
-                    # Registrar movimento de entrada
+                    # Registrar movimento de entrada (category='Produção' para aparecer
+                    # filtrado na tela de Movimentação do desktop)
                     cursor.execute("""
-                        INSERT INTO stock_movements (product_id, type, quantity, reason, created_at)
-                        VALUES (?, 'entrada', ?, 'Produção concluída', ?)
+                        INSERT INTO stock_movements (product_id, type, category, quantity, reason, created_at, created_by)
+                        VALUES (?, 'entrada', 'Produção', ?, 'Produção concluída (painel web)', ?, 'painel-web')
                     """, (product_id, quantity, now))
                     
                     total_items += quantity
@@ -745,7 +842,7 @@ class WebServer:
                 
                 change = int(data['change'])
                 
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # Buscar quantidade atual
@@ -874,22 +971,24 @@ class WebServer:
         )
 
 
-def start_server(db_path: str, web_dir: str, port: int = 5000):
+def start_server(db_path: str, web_dir: str, port: int = 5000, access_token: str = None):
     """
     Função helper para iniciar o servidor em uma thread
-    
+
     Args:
         db_path: Caminho para o banco de dados
         web_dir: Diretório dos arquivos web
         port: Porta do servidor
+        access_token: PIN exigido para acessar a API (/api/*)
     """
     try:
         print(f"🔧 Configurando servidor Flask...")
         print(f"   - Banco: {db_path}")
         print(f"   - Web: {web_dir}")
         print(f"   - Porta: {port}")
-        
-        server = WebServer(db_path, web_dir, port)
+        print(f"   - PIN de acesso exigido: {'sim' if access_token else 'NÃO (desprotegido!)'}")
+
+        server = WebServer(db_path, web_dir, port, access_token)
         print(f"✅ Servidor Flask configurado")
         print(f"🚀 Iniciando servidor na porta {port}...")
         server.run()

@@ -277,24 +277,56 @@ def apply_dark_popup_style(dialog: QWidget) -> None:
 def load_config() -> Dict[str, Any]:
     """
     Carrega as configurações do arquivo YAML.
-    
+
     Returns:
         Dict[str, Any]: Dicionário com as configurações
     """
     if not os.path.exists(_CONFIG_PATH):
         return {}
-    with open(_CONFIG_PATH, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with open(_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        # config.yaml corrompido (ex: processo encerrado durante escrita) -
+        # não deixa o app inteiro travar na inicialização, apenas usa defaults.
+        print(f"⚠️ config.yaml corrompido, ignorando e usando padrões: {e}")
+        return {}
 
 def save_config(data: Dict[str, Any]) -> None:
     """
     Salva as configurações no arquivo YAML.
-    
+
+    Escreve em um arquivo temporário e substitui o original de forma
+    atômica (os.replace), para que uma queda no meio da escrita não deixe
+    o config.yaml truncado/inválido para a próxima leitura.
+
     Args:
         data: Dicionário com as configurações para salvar
     """
-    with open(_CONFIG_PATH, 'w', encoding='utf-8') as f:
+    tmp_path = _CONFIG_PATH + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
         yaml.safe_dump(data, f, allow_unicode=True)
+    os.replace(tmp_path, _CONFIG_PATH)
+
+
+def get_web_panel_token() -> str:
+    """
+    Retorna o PIN de acesso ao Painel da Cozinha (servidor web na rede local).
+
+    Gerado automaticamente na primeira execução e persistido em config.yaml,
+    para exigir autenticação mínima de quem acessa a API pela rede Wi-Fi.
+
+    Returns:
+        str: PIN numérico de 6 dígitos
+    """
+    config = load_config()
+    token = config.get('web_panel_token')
+    if not token:
+        import secrets
+        token = f"{secrets.randbelow(1_000_000):06d}"
+        config['web_panel_token'] = token
+        save_config(config)
+    return token
 
 def get_database_path() -> str:
     """

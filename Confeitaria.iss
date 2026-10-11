@@ -1,36 +1,57 @@
 #define MyAppName      "Confeitaria"
-#define MyAppVersion   "1.12.0"
+#define MyAppVersion   "1.15.0"
 #define MyAppPublisher "DWM Systems Developer"
 #define MyAppExeName   "Confeitaria.exe"
 #define MyAppURL       ""  ; Pode adicionar um site aqui se desejar
 #define MyAppAssoc     "confeitariadb"  ; Extensão para associação de arquivos (opcional)
 #define MyAppDataDir   "{userappdata}\Confeitaria"
 
-; CHANGELOG v1.12.0 (2025-12-03)
+; CHANGELOG v1.15.0 (2026-09-06)
 ; ================================
-; 📊 DASHBOARD COMPLETO
-; ✅ Dashboard com estatísticas em tempo real
-; ✅ Gráficos de vendas dos últimos 6 meses
-; ✅ Gráfico de status de pedidos com barras de progresso
-; ✅ Tabela com top 10 produtos mais vendidos
-; 💰 SISTEMA DE PREÇOS
-; ✅ Preços de produtos implementados no banco
-; ✅ Formatação monetária brasileira (R$ 1.234,56)
-; ✅ Coluna de preços na tabela de produtos
-; 🔐 LOGIN INTELIGENTE
-; ✅ Checkbox "Lembrar credenciais"
-; ✅ Auto-preenchimento de usuário e senha
-; ✅ Credenciais salvas com segurança (Base64)
-; 🏢 PERSONALIZAÇÃO DA EMPRESA
-; ✅ Nome da empresa configurável
-; ✅ Upload de logo customizado
-; ✅ Logo exibido na interface principal
-; 🎨 INTERFACE OTIMIZADA
-; ✅ Dashboard com alinhamento perfeito
-; ✅ Componentes 30% menores para melhor uso do espaço
-; ✅ Tabelas com colunas auto-ajustáveis
-; ✅ Gráficos com fonte monospace para alinhamento perfeito
-; 
+; 🛠️ CORREÇÕES DE INTEGRIDADE DE DADOS
+; ✅ Painel da Cozinha: editar quantidade de pedido agora ajusta o estoque corretamente
+; ✅ Pedidos com múltiplos produtos ganham um ID de lote único (evita agrupar/excluir lotes errados)
+; ✅ Reparo e restauração de banco atualizam o schema automaticamente
+; ✅ Corrigida corrupção do campo "Tamanho" ao editar itens de Produção
+; ✅ Editar data de entrega de um pedido futuro para hoje reserva o estoque na hora
+; ✅ Criação de pedido com múltiplos produtos: desfaz tudo automaticamente se algum item falhar
+; ✅ Corrigida condição de corrida que podia deixar estoque negativo em Movimentação
+; ✅ Exclusão de usuário bloqueada para o próprio usuário logado e para o último administrador
+; ✅ Edição de produto agora registra a mudança de estoque em Movimentação
+; ✅ Excluir cliente com pedidos vinculados avisa em vez de falhar em silêncio
+; ✅ Importar pedidos para Produção pede confirmação antes de substituir a lista atual
+; ✅ Nomes de usuário e etiquetas duplicados (maiúsc./minúsc.) tratados corretamente
+; 🖱️ SELEÇÃO MÚLTIPLA
+; ✅ Excluir com vários itens selecionados agora remove todos (Produtos, Clientes, Movimentação, Produção)
+;
+; CHANGELOG v1.14.0 (2026-09-06)
+; ================================
+; 🔒 SEGURANÇA
+; ✅ Painel da Cozinha (acesso pela rede) agora exige PIN de acesso
+; ✅ Login: bloqueio automático após tentativas incorretas repetidas
+; ✅ Login: senha "lembrada" agora protegida com criptografia do Windows (DPAPI)
+; ✅ Recuperação de banco corrompido verifica integridade antes de substituir o original
+; ⚡ LOGIN AUTOMÁTICO
+; ✅ Com "Lembrar credenciais" marcado, entra direto sem precisar digitar de novo
+; ✅ Segure Shift ao abrir o app para trocar de usuário
+; 📦 ESTOQUE
+; ✅ NOVO: tela de Movimentação - entradas, saídas, produção e perdas/quebras
+; ✅ Registro de perdas de estoque com resumo financeiro do impacto
+; ✅ Histórico completo, filtros por tipo/período e exportação para Excel
+; ✅ Pronta Entrega: produtos esgotados ficam marcados em vez de desaparecer da lista
+; 🖥️ INTERFACE
+; ✅ Correção: janela desproporcional em telas com resoluções diferentes/múltiplos monitores
+;
+; CHANGELOG v1.13.0 (2026-03-17)
+; ================================
+; 🎨 PERSONALIZAÇÃO COMPLETA
+; ✅ Logo customizada em TODAS as telas (Login, Header, Ícone)
+; ✅ Correção: Logo não fica mais cortada no header
+; ✅ Suporte a logos retangulares e quadradas (até 200x64px)
+; ✅ Ícone do executável/instalador atualizado automaticamente
+; ✅ Tamanho dinâmico do header com altura de 64px
+; ✅ Alinhamento vertical perfeito da logo
+;
 ; CHANGELOG v1.11.27 (2025-11-17)
 ; ================================
 ; 🔄 ATUALIZAÇÃO REMOTA FUNCIONAL
@@ -123,8 +144,8 @@ AppMutex=ConfeitariaAppMutex2023
 DisableProgramGroupPage=yes
 OutputDir=output
 OutputBaseFilename=Confeitaria_Setup_{#MyAppVersion}
-SetupIconFile={#IconsDir}\logo.ico
-UninstallDisplayIcon={app}\assets\icons\logo.ico
+SetupIconFile={#IconsDir}\logo_gih.ico
+UninstallDisplayIcon={app}\assets\icons\logo_gih.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -187,23 +208,17 @@ Source: "{#ProjectRoot}web\*"; DestDir: "{app}\web"; Flags: ignoreversion recurs
 Source: "{#ProjectRoot}Confeitaria.py"; DestDir: "{app}"; Flags: ignoreversion confirmoverwrite
 
 ; ========================================
-; CRÍTICO: Arquivos para Auto-Atualização
+; Arquivos de Configuração
 ; ========================================
-; SEM ESTES ARQUIVOS, ATUALIZAÇÃO REMOTA NÃO FUNCIONA!
-; version.json - Controla qual versão está disponível no GitHub
-; github_token.txt - Autentica acesso ao repositório privado
-; TOKEN_SETUP.md - Instruções caso token seja perdido
 Source: "{#ProjectRoot}version.json"; DestDir: "{app}"; Flags: ignoreversion confirmoverwrite
-Source: "{#ProjectRoot}github_token.txt"; DestDir: "{app}"; Flags: ignoreversion confirmoverwrite
-Source: "{#ProjectRoot}TOKEN_SETUP.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 ; Banco de dados inicial (apenas se não existir)
 Source: "{#ProjectRoot}confeitaria.db"; DestDir: "{#MyAppDataDir}\data"; Flags: onlyifdoesntexist skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo_gih.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo.ico"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo_gih.ico"; Tasks: desktopicon
 
 [Registry]
 ; Registrar protocolo customizado (confeitaria://)

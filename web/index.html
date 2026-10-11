@@ -198,6 +198,20 @@
             transform: scale(0.98);
         }
 
+        .product-card.out-of-stock {
+            opacity: 0.6;
+            border-color: var(--warning-yellow);
+        }
+
+        .stock-badge-out {
+            font-weight: 700;
+            color: #fff;
+            background: #EF4444;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+
         .product-info-left {
             flex: 1;
         }
@@ -709,7 +723,21 @@
     <div id="debug-banner" style="display: none; position: fixed; bottom: 0; left: 0; right: 0; background: #667eea; color: white; padding: 10px; text-align: center; font-size: 12px; z-index: 9999;">
         <div id="debug-info">Debug Mode</div>
     </div>
-    
+
+    <!-- Overlay de PIN de acesso -->
+    <div id="pin-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 10000; align-items: center; justify-content: center;">
+        <div style="background: #fff; border-radius: 16px; padding: 32px; max-width: 340px; width: 90%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+            <h2 style="margin-bottom: 8px; color: #C084FC;">🔑 Acesso ao Painel</h2>
+            <p style="color: #6B7280; margin-bottom: 16px; font-size: 0.9rem;">Digite o PIN mostrado no sistema (janela principal) para acessar.</p>
+            <input id="pin-input" type="tel" inputmode="numeric" maxlength="6" placeholder="000000"
+                style="width: 100%; padding: 12px; font-size: 1.4rem; text-align: center; letter-spacing: 4px; border: 2px solid #E9D5FF; border-radius: 8px; margin-bottom: 12px;">
+            <div id="pin-error" style="color: #EF4444; font-size: 0.85rem; min-height: 18px; margin-bottom: 8px;"></div>
+            <button onclick="submitPin()" style="width: 100%; padding: 12px; background: #C084FC; color: #fff; border: none; border-radius: 8px; font-weight: 600; font-size: 1rem; cursor: pointer;">
+                Entrar
+            </button>
+        </div>
+    </div>
+
     <div class="container">
         <!-- Barra superior com menu e tema -->
         <div class="top-bar">
@@ -810,6 +838,77 @@
     </div>
 
     <script>
+        // ---- Autenticação por PIN (Painel da Cozinha) ----
+        // Injeta o PIN salvo em toda chamada à API e trata 401 exibindo o overlay.
+        const PIN_STORAGE_KEY = 'panel_token';
+
+        function getStoredPin() {
+            try {
+                return localStorage.getItem(PIN_STORAGE_KEY) || '';
+            } catch (e) {
+                return '';
+            }
+        }
+
+        function storePin(pin) {
+            try {
+                localStorage.setItem(PIN_STORAGE_KEY, pin);
+            } catch (e) { /* localStorage indisponível: segue só na sessão */ }
+        }
+
+        function showPinOverlay(message) {
+            const overlay = document.getElementById('pin-overlay');
+            const errorEl = document.getElementById('pin-error');
+            if (errorEl) errorEl.textContent = message || '';
+            if (overlay) overlay.style.display = 'flex';
+            const input = document.getElementById('pin-input');
+            if (input) { input.value = ''; input.focus(); }
+        }
+
+        function hidePinOverlay() {
+            const overlay = document.getElementById('pin-overlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+
+        function submitPin() {
+            const input = document.getElementById('pin-input');
+            const pin = input ? input.value.trim() : '';
+            if (!pin) {
+                showPinOverlay('Digite o PIN.');
+                return;
+            }
+            storePin(pin);
+            hidePinOverlay();
+            location.reload();
+        }
+
+        // Envolve o fetch nativo para: (1) anexar o PIN salvo em toda chamada /api/*
+        // e (2) reabrir o overlay automaticamente se o servidor responder 401.
+        const _nativeFetch = window.fetch.bind(window);
+        window.fetch = async function (url, options = {}) {
+            const isApi = typeof url === 'string' && url.includes('/api/');
+            if (isApi) {
+                options = { ...options, headers: { ...(options.headers || {}), 'X-Panel-Token': getStoredPin() } };
+            }
+            const response = await _nativeFetch(url, options);
+            if (isApi && response.status === 401) {
+                showPinOverlay('PIN incorreto. Tente novamente.');
+            }
+            return response;
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!getStoredPin()) {
+                showPinOverlay('');
+            }
+            const input = document.getElementById('pin-input');
+            if (input) {
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') submitPin();
+                });
+            }
+        });
+
         // Estado global
         let currentSection = 'production';
         let refreshIntervals = {
@@ -1087,7 +1186,7 @@
 
                 if (hasChanged || container.children.length === 0) {
                     container.innerHTML = data.products.map(product => `
-                        <div class="product-card" 
+                        <div class="product-card ${product.stock <= 0 ? 'out-of-stock' : ''}"
                              data-card-id="${product.id}"
                              onclick="setExactQuantity(${product.id}, 'ready-stock')"
                              title="💡 Clique para editar a quantidade">
@@ -1096,9 +1195,9 @@
                                 <div class="product-desc">${product.description || 'Sem descrição'}</div>
                                 ${product.size ? `<div class="product-size">📏 Tamanho: ${formatSize(product.size)}</div>` : ''}
                                 <div class="product-stock-display">
-                                    Estoque: 
+                                    Estoque:
                                     <span class="product-stock" data-product-id="${product.id}">
-                                        ${product.stock} un
+                                        ${product.stock <= 0 ? '<span class="stock-badge-out">Esgotado</span>' : `${product.stock} un`}
                                     </span>
                                 </div>
                                 ${product.min_quantity ? `<div class="product-min" style="font-size: 0.85rem; color: var(--text-gray); margin-top: 4px;">Mínimo: ${product.min_quantity} un</div>` : ''}
@@ -1113,22 +1212,30 @@
                     // Atualizar apenas os números de estoque
                     data.products.forEach(product => {
                         const stockElement = document.querySelector(`#ready-stock-container [data-product-id="${product.id}"]`);
+                        const cardElement = document.querySelector(`#ready-stock-container [data-card-id="${product.id}"]`);
                         if (stockElement) {
                             const cached = readyStockCache.find(p => p.id === product.id);
                             if (!cached || cached.stock !== product.stock) {
-                                stockElement.style.transition = 'all 0.3s ease';
-                                stockElement.style.background = '#C084FC';
-                                stockElement.style.color = 'white';
-                                stockElement.style.padding = '2px 8px';
-                                stockElement.style.borderRadius = '6px';
-                                stockElement.textContent = `${product.stock} un`;
-                                
-                                setTimeout(() => {
-                                    stockElement.style.background = '';
-                                    stockElement.style.color = '';
-                                    stockElement.style.padding = '';
-                                }, 1000);
-                                
+                                if (cardElement) {
+                                    cardElement.classList.toggle('out-of-stock', product.stock <= 0);
+                                }
+                                if (product.stock <= 0) {
+                                    stockElement.innerHTML = '<span class="stock-badge-out">Esgotado</span>';
+                                } else {
+                                    stockElement.style.transition = 'all 0.3s ease';
+                                    stockElement.style.background = '#C084FC';
+                                    stockElement.style.color = 'white';
+                                    stockElement.style.padding = '2px 8px';
+                                    stockElement.style.borderRadius = '6px';
+                                    stockElement.textContent = `${product.stock} un`;
+
+                                    setTimeout(() => {
+                                        stockElement.style.background = '';
+                                        stockElement.style.color = '';
+                                        stockElement.style.padding = '';
+                                    }, 1000);
+                                }
+
                                 console.log(`📊 Pronta Entrega atualizada: ${product.name} → ${product.stock}`);
                             }
                         }

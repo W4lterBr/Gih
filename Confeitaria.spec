@@ -1,46 +1,44 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Confeitaria - Build Spec v1.12.1
-# Atualizado: 2025-12-03
-# CORREÇÕES DE BACKUP + REPARO DE BANCO
+# Confeitaria - Build Spec v1.15.0
+# Atualizado: 2026-09-06
+# SISTEMA 100% LOCAL
 # =======================================
-# 🔧 Sistema de reparo de banco corrompido
+# 🛠️ Correções de integridade: estoque, lotes de pedidos, reparo/restauração de banco
+# 🛠️ Editar data de pedido futuro para hoje reserva o estoque na hora
+# 🛠️ Criação de pedido com múltiplos produtos desfaz tudo se algum item falhar
+# 🛠️ Corrigida condição de corrida que podia deixar estoque negativo
+# 🖱️ Excluir com múltipla seleção corrigido em Produtos, Clientes, Movimentação, Produção
+# 🔒 Painel da Cozinha (rede) protegido por PIN de acesso
+# 🔒 Login com bloqueio automático por tentativas incorretas
+# 🔒 Credenciais salvas protegidas com criptografia do Windows (DPAPI)
+# ⚡ Login automático com credenciais salvas (Shift força tela de login)
+# 📦 Tela de Movimentação: entradas, saídas, produção e perdas de estoque
+# 📦 Pronta Entrega mostra produtos esgotados em vez de escondê-los
+# 🖥️ Correção de proporção de janela em telas/monitores diferentes
+# 🏠 Sistema totalmente local (sem GitHub)
+# 🔧 Sistema de reparo de banco corrompido com verificação de integridade
 # 🔄 Correção na restauração de backups ZIP
-# 📁 Explorador do Windows nativo
-# ✅ Consolidação automática de WAL
 # 📊 Dashboard completo com estatísticas
 # 💰 Sistema de preços com formatação monetária brasileira
-# 🔐 Login com memorização de credenciais
 # 🎨 5 temas disponíveis (Escuro, Claro, Rosa, Roxo, Azul)
-# ✅ Sistema de atualização remota via GitHub
-# ✅ Token GitHub em texto simples (github_token.txt)
+# 📦 Banco de dados incluído na distribuição
 # ✅ Preserva banco de dados, configurações, backups e logs
-# ✅ Atualizações de ~500KB vs ~200MB do instalador
-# ✅ Clientes atualizam com 1 clique em Configurações
-# 
-# GARANTIAS DE ATUALIZAÇÃO:
-# - Substitui: .py, core/, ui/, src/, assets/, web/
-# - Preserva: confeitaria.db, config.yaml, token, logs, backups
-# - Limpeza de cache PyQt6 automática
-# - Rollback automático em caso de falha
 
 a = Analysis(
-    ['launcher.py'],  # ← Launcher compacto que carrega Confeitaria.py externo
+    ['Confeitaria.py'],  # ← Código principal do sistema
     pathex=[],
     binaries=[
         # CRÍTICO: Adiciona DLLs do SQLite se necessário
         # PyInstaller deve incluir automaticamente, mas forçamos aqui
     ],
     datas=[
-        ('assets', 'assets'),  # Ícones e recursos visuais (ATUALIZADO REMOTAMENTE)
-        ('core', 'core'),      # Lógica do sistema (ATUALIZADO REMOTAMENTE)
-        ('src', 'src'),        # Módulos auxiliares (ATUALIZADO REMOTAMENTE)
-        ('ui', 'ui'),          # Interface PyQt6 (ATUALIZADO REMOTAMENTE)
-        ('data', 'data'),      # Configurações base (PRESERVADO EM ATUALIZAÇÕES)
-        ('web', 'web'),        # Painel web HTML (ATUALIZADO REMOTAMENTE)
-        ('Confeitaria.py', '.'),      # CRÍTICO: Código principal EXTERNO (atualizável)
-        ('version.json', '.'),        # CRÍTICO: Controle de versão para auto-update
-        ('github_token.txt', '.'),    # CRÍTICO: Token para repositório privado
-        ('TOKEN_SETUP.md', '.')       # Documentação do sistema de licença
+        ('assets', 'assets'),  # Ícones e recursos visuais
+        ('core', 'core'),      # Lógica do sistema
+        ('ui', 'ui'),          # Interface PyQt6
+        ('data', 'data'),      # Configurações base
+        ('web', 'web'),        # Painel web HTML
+        ('version.json', '.'),        # Controle de versão
+        ('confeitaria.db', '.'),      # BANCO DE DADOS com dados de exemplo
     ],
     hiddenimports=[
         'PyQt6.QtCore', 
@@ -82,7 +80,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\icons\\logo.ico'],
+    icon=['assets\\icons\\logo_gih.ico'],  # Ícone customizado da Confeitaria Gih
 )
 coll = COLLECT(
     exe,

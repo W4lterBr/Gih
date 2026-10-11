@@ -293,12 +293,16 @@ def verify_password(password: str, stored_hash: str) -> bool:
     try:
         # Verifica se é hash bcrypt (começa com $2a$, $2b$, $2y$)
         is_bcrypt = stored_hash.startswith('$2')
-        
-        if bcrypt and is_bcrypt:
-            # Verifica com bcrypt
+
+        if is_bcrypt:
+            # Não cai no fallback SHA256 aqui: comparar sha256(password) com um hash bcrypt
+            # nunca bate, então sem bcrypt instalado o usuário travaria mesmo com senha certa.
+            if not bcrypt:
+                print("Error verifying password: hash é bcrypt mas o pacote 'bcrypt' não está disponível")
+                return False
             return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
         else:
-            # Verifica com SHA256
+            # Verifica com SHA256 (hash legado)
             import hashlib
             password_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
             return password_hash == stored_hash
@@ -671,7 +675,23 @@ class ExtendedDatabase(Database):
                 FOREIGN KEY(order_id) REFERENCES orders(id)
             )
         """)
-        
+
+        # Migração: adiciona 'category' (subtipo: Compra/Produção/Perda/Venda/Ajuste/...)
+        # e 'created_by' (quem registrou) para a tela de Movimentação - antes o único
+        # jeito de categorizar era o texto livre em 'reason', sem padronização.
+        cur.execute("PRAGMA table_info(stock_movements)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "category" not in columns:
+            cur.execute("ALTER TABLE stock_movements ADD COLUMN category TEXT")
+            self.conn.commit()
+            print("✓ Campo 'category' adicionado em stock_movements.")
+        cur.execute("PRAGMA table_info(stock_movements)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "created_by" not in columns:
+            cur.execute("ALTER TABLE stock_movements ADD COLUMN created_by TEXT")
+            self.conn.commit()
+            print("✓ Campo 'created_by' adicionado em stock_movements.")
+
         # Etiquetas personalizadas
         cur.execute("""
             CREATE TABLE IF NOT EXISTS labels (
@@ -769,11 +789,12 @@ def check_and_reserve_stock(db: Any) -> int:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         
-        # Busca pedidos com data de entrega = hoje e stock_reserved = 0
+        # Busca pedidos com data de entrega hoje OU já vencida (ex: app ficou fechado
+        # no dia da entrega) que ainda não tiveram estoque reservado
         rows = db.query("""
-            SELECT id, product_id, quantity 
-            FROM orders 
-            WHERE DATE(delivery_date) = ? 
+            SELECT id, product_id, quantity
+            FROM orders
+            WHERE DATE(delivery_date) <= ?
             AND stock_reserved = 0
             AND product_id IS NOT NULL
         """, (today,))
@@ -783,6 +804,7 @@ def check_and_reserve_stock(db: Any) -> int:
         
         processed = 0
         for row in rows:
+            oid = row["id"]
             try:
                 oid = int(row["id"])
                 prod_id = int(row["product_id"])
@@ -2457,16 +2479,23 @@ class UsersDialog(QDialog):
                     raise ValueError("Nome de usuário é obrigatório")
                 if not password:
                     raise ValueError("Senha é obrigatória para novos usuários")
-                
+
+                # Checagem amigável de duplicidade - sem isso o erro era só o
+                # IntegrityError cru do SQLite (UNIQUE constraint failed: users.username)
+                # mostrado direto pro usuário via show_message(..., str(e), ...)
+                existing = self.db.query("SELECT 1 FROM users WHERE username=?", (username,))
+                if existing:
+                    raise ValueError(f"Já existe um usuário com o nome '{username}'.")
+
                 # Debug: verificar se a senha não está vazia
                 print(f"Debug: Criando usuário '{username}' com senha de {len(password)} caracteres")
-                
+
                 password_hash = hash_password(password)
                 if not password_hash:
                     raise ValueError("Erro ao gerar hash da senha. Verifique se a senha foi inserida corretamente.")
-                
+
                 print(f"Debug: Hash gerado: {password_hash[:50]}...")  # Log parcial do hash para debug
-                
+
                 self.db.execute("INSERT INTO users(username, password_hash, role) VALUES (?,?,?)", (username, password_hash, role))
                 print(f"Debug: Usuário '{username}' inserido no banco com sucesso")
                 self.refresh()
@@ -2519,6 +2548,35 @@ class UsersDialog(QDialog):
         uid = self.current_id()
         if not uid:
             return
+
+        row = self.db.query("SELECT username, role FROM users WHERE id=?", (uid,))
+        if not row:
+            return
+        target_username = row[0]["username"]
+        target_role = row[0]["role"]
+
+        # Impede excluir a própria conta logada - sem isso dava pra se auto-excluir
+        # no meio da sessão e ficar num estado inconsistente (sessão ativa de um
+        # usuário que não existe mais no banco).
+        current_user = getattr(self.db, "current_user", None)
+        if current_user and str(current_user).lower() == str(target_username).lower():
+            show_message(self, "Não é possível excluir",
+                         "Você não pode excluir seu próprio usuário enquanto está logado com ele.",
+                         ("OK",))
+            return
+
+        # Impede excluir o último administrador restante - sem isso dava pra trancar
+        # todo mundo fora da tela de Usuários (só admin acessa), sem forma de
+        # recuperar o acesso a não ser mexendo direto no banco.
+        if target_role == "admin":
+            admin_count = self.db.query("SELECT COUNT(*) AS c FROM users WHERE role='admin'")
+            if admin_count and int(admin_count[0]["c"]) <= 1:
+                show_message(self, "Não é possível excluir",
+                             "Este é o único administrador do sistema. Crie outro administrador "
+                             "antes de excluir este.",
+                             ("OK",))
+                return
+
         res = show_message(self, "Confirmação", "Excluir este usuário?", ("Não", "Sim"), default=1)
         if res == 1:
             try:
@@ -2774,8 +2832,8 @@ class LabelsDialog(QDialog):
         
         if ok and name.strip():
             name = name.strip()
-            # Verifica duplicata
-            existing = self.db.query("SELECT 1 FROM labels WHERE name=?", (name,))
+            # Verifica duplicata (case-insensitive)
+            existing = self.db.query("SELECT 1 FROM labels WHERE LOWER(name)=LOWER(?)", (name,))
             if existing:
                 show_message(self, "Erro", "Já existe uma etiqueta com este nome.", ("OK",))
                 return
@@ -2914,8 +2972,9 @@ class LabelsDialog(QDialog):
                 return
             
             if new_name != old_name:
-                # Verifica duplicata
-                existing = self.db.query("SELECT 1 FROM labels WHERE name=? AND id!=?", (new_name, lid))
+                # Verifica duplicata (case-insensitive - "Urgente" e "urgente" não
+                # podiam coexistir sem confundir o cascade de UPDATE orders abaixo)
+                existing = self.db.query("SELECT 1 FROM labels WHERE LOWER(name)=LOWER(?) AND id!=?", (new_name, lid))
                 if existing:
                     show_message(self, "Erro", "Já existe uma etiqueta com este nome.", ("OK",))
                     return
@@ -2933,9 +2992,10 @@ class LabelsDialog(QDialog):
         
         try:
             self.db.execute("UPDATE labels SET name=?, color=? WHERE id=?", (new_name, new_color, lid))
-            # Atualiza todos os pedidos que usam esta etiqueta
+            # Atualiza todos os pedidos que usam esta etiqueta (case-insensitive,
+            # simétrico com a checagem de duplicata acima)
             if new_name != old_name:
-                self.db.execute("UPDATE orders SET label=? WHERE label=?", (new_name, old_name))
+                self.db.execute("UPDATE orders SET label=? WHERE LOWER(label)=LOWER(?)", (new_name, old_name))
             self.refresh()
         except Exception as e:
             show_message(self, "Erro", f"Erro ao editar etiqueta: {e}", ("OK",))
@@ -3022,6 +3082,7 @@ class ProductsPage(BasePage):
         self.table: QTableWidget = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Nome", "Descrição", "Tamanho", "Preço", "Estoque", "Logs"])
         self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         header = self.table.horizontalHeader()
         if header:
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -3214,6 +3275,8 @@ class ProductsPage(BasePage):
                 # Verifica se tem múltiplos tamanhos separados por vírgula
                 sizes = [s.strip() for s in size.split(",") if s.strip()] if size else []
                 
+                old_stock_before_edit = int(row[0]["stock"] or 0)
+
                 if len(sizes) > 1:
                     # Atualiza o produto atual com o primeiro tamanho
                     first_size = sizes[0]
@@ -3222,7 +3285,17 @@ class ProductsPage(BasePage):
                         "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=? WHERE id=?",
                         (product_name, desc, first_size, stock, min_stock, price, pid)
                     )
-                    
+                    # Registra o ajuste de estoque deste produto em Movimentação - antes
+                    # editar o produto mudava products.stock sem deixar rastro nenhum,
+                    # diferente de add()/produção, que sempre registram.
+                    stock_delta = int(stock) - old_stock_before_edit
+                    if stock_delta != 0:
+                        self.db.execute(
+                            "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
+                            (pid, 'entrada' if stock_delta > 0 else 'saida', 'Ajuste de Inventário', abs(stock_delta),
+                             'Edição de produto', None, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), getattr(self.db, "current_user", None) or "unknown")
+                        )
+
                     # Cria novos produtos para os tamanhos restantes
                     created_count = 0
                     for sz in sizes[1:]:
@@ -3253,6 +3326,13 @@ class ProductsPage(BasePage):
                         "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=? WHERE id=?",
                         (name, desc, size, stock, min_stock, price, pid)
                     )
+                    stock_delta = int(stock) - old_stock_before_edit
+                    if stock_delta != 0:
+                        self.db.execute(
+                            "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
+                            (pid, 'entrada' if stock_delta > 0 else 'saida', 'Ajuste de Inventário', abs(stock_delta),
+                             'Edição de produto', None, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), getattr(self.db, "current_user", None) or "unknown")
+                        )
                     self.refresh()
                     self._warn_low_stock()
                     if self.toast_cb:
@@ -3284,34 +3364,72 @@ class ProductsPage(BasePage):
                 show_message(self, "Erro ao atualizar", str(e), ("OK",))
 
     def delete(self) -> None:
-        pid = self.current_id()
-        if not pid:
+        # Antes só considerava self.table.currentRow() (uma linha), então selecionar
+        # vários produtos e clicar Excluir apagava só o último focado. Agora pega
+        # todas as linhas selecionadas via selectionModel().
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
             return
-        res = show_message(self, "Confirmação", "Excluir este produto?", ("Não", "Sim"), default=1)
-        if res == 1:
-            try:
-                deps = self.db.query("SELECT COUNT(*) AS c FROM orders WHERE product_id=?", (pid,))
-                if deps and deps[0]["c"] > 0:
-                    show_message(self, "Aviso",
-                                 "Existe(m) pedido(s) usando este produto. Exclua/ajuste os pedidos primeiro.",
-                                 ("OK",))
-                    return
-                
-                # Deleta registros relacionados antes de deletar o produto
-                self.db.execute("DELETE FROM stock_movements WHERE product_id=?", (pid,))
-                self.db.execute("DELETE FROM production_items WHERE product_id=?", (pid,))
-                self.db.execute("DELETE FROM products WHERE id=?", (pid,))
-                
-                self.refresh()
-                self._warn_low_stock()
-                if self.toast_cb:
-                    self.toast_cb("Produto excluído")
+        pids: list[int] = []
+        for index in selected_rows:
+            vh = self.table.verticalHeaderItem(index.row())
+            if vh:
                 try:
-                    self.db.audit_log("product", pid, "delete", details=None)
-                except Exception:
+                    pids.append(int(vh.text()))
+                except (ValueError, AttributeError):
                     pass
-            except Exception as e:
-                show_message(self, "Erro ao excluir", str(e), ("OK",))
+        pids = list(dict.fromkeys(pids))
+        if not pids:
+            return
+
+        count = len(pids)
+        msg = "Excluir este produto?" if count == 1 else f"Excluir {count} produtos selecionados?"
+        res = show_message(self, "Confirmação", msg, ("Não", "Sim"), default=1)
+        if res != 1:
+            return
+
+        deleted = 0
+        blocked: list[str] = []
+        # Agrupa tudo em uma única transação: sem isso, excluir muitos produtos fazia
+        # 3+ commits síncronos por produto (centenas/milhares no total) e travava a
+        # janela por vários segundos numa seleção grande.
+        with self.db.transaction():
+            for pid in pids:
+                try:
+                    deps = self.db.query("SELECT COUNT(*) AS c FROM orders WHERE product_id=?", (pid,))
+                    if deps and deps[0]["c"] > 0:
+                        name_row = self.db.query("SELECT name FROM products WHERE id=?", (pid,))
+                        blocked.append(name_row[0]["name"] if name_row else str(pid))
+                        continue
+
+                    # Deleta registros relacionados antes de deletar o produto
+                    self.db.execute("DELETE FROM stock_movements WHERE product_id=?", (pid,))
+                    self.db.execute("DELETE FROM production_items WHERE product_id=?", (pid,))
+                    self.db.execute("DELETE FROM products WHERE id=?", (pid,))
+                    deleted += 1
+                    try:
+                        self.db.audit_log("product", pid, "delete", details=None)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Erro ao excluir produto #{pid}: {e}")
+
+        self.refresh()
+        self._warn_low_stock()
+        if self.toast_cb:
+            if deleted and not blocked:
+                self.toast_cb("Produto excluído" if deleted == 1 else f"{deleted} produtos excluídos")
+            elif deleted and blocked:
+                self.toast_cb(f"{deleted} excluído(s), {len(blocked)} bloqueado(s) por ter pedidos vinculados")
+            elif blocked:
+                self.toast_cb("Nenhum produto excluído (todos têm pedidos vinculados)")
+        if blocked:
+            show_message(
+                self, "Aviso",
+                "Produto(s) com pedidos vinculados não foram excluídos: " + ", ".join(blocked) +
+                ". Exclua/ajuste os pedidos primeiro.",
+                ("OK",)
+            )
 
 class ReadyStockPage(BasePage):
     """Lista de produtos com estoque disponível (Pronta Entrega)."""
@@ -3365,20 +3483,24 @@ class ReadyStockPage(BasePage):
                 term = self.search_edit.text().strip()
             except Exception:
                 term = ""
+            # Mostra TODOS os produtos (não só os com estoque > 0): itens zerados
+            # ficam marcados como "Esgotado" em vez de simplesmente sumir da lista
+            # sem aviso - antes era impossível notar que um produto zerou só
+            # olhando essa tela, já que ele desaparecia silenciosamente.
             if term:
                 like = f"%{term}%"
                 rows = self.db.query(
                     """
                     SELECT id, name, description, size, stock, min_stock
                     FROM products
-                    WHERE stock > 0 AND (name LIKE ? OR description LIKE ?)
-                    ORDER BY name
+                    WHERE name LIKE ? OR description LIKE ?
+                    ORDER BY (stock <= 0), name
                     """,
                     (like, like)
                 )
             else:
                 rows = self.db.query(
-                    "SELECT id, name, description, size, stock, min_stock FROM products WHERE stock > 0 ORDER BY name"
+                    "SELECT id, name, description, size, stock, min_stock FROM products ORDER BY (stock <= 0), name"
                 )
             self.table.setRowCount(0)
             for r in rows:
@@ -3386,7 +3508,13 @@ class ReadyStockPage(BasePage):
                 self.table.setItem(row, 0, QTableWidgetItem(r["name"]))
                 self.table.setItem(row, 1, QTableWidgetItem(r["description"] or ""))
                 self.table.setItem(row, 2, QTableWidgetItem(format_size(r["size"])))
-                self.table.setItem(row, 3, QTableWidgetItem(str(r["stock"])) )
+                stock_val = r["stock"]
+                stock_item = QTableWidgetItem("Esgotado" if stock_val <= 0 else str(stock_val))
+                if stock_val <= 0:
+                    stock_item.setBackground(QColor(255, 102, 102))  # Vermelho claro
+                    stock_item.setForeground(QColor(255, 255, 255))  # Texto branco
+                    stock_item.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                self.table.setItem(row, 3, stock_item)
                 self.table.setVerticalHeaderItem(row, QTableWidgetItem(str(r["id"])) )
         except Exception as e:
             print(f"Erro no refresh da página Estoque: {e}")
@@ -3444,10 +3572,589 @@ class ReadyStockPage(BasePage):
                     self.toast_cb("Produto atualizado com sucesso!")
                 
                 self.refresh()
-                
+
             except Exception as e:
                 if self.toast_cb:
                     self.toast_cb(f"Erro ao atualizar produto: {str(e)}")
+
+
+# Categorias de movimentação de estoque - a coluna 'type' do banco continua só
+# 'entrada'/'saida' (CHECK constraint existente), 'category' é o subtipo que
+# permite reportar/filtrar por Perda, Produção, Venda etc.
+MOVEMENT_CATEGORIES: dict[str, list[str]] = {
+    "Entrada": ["Compra/Reposição", "Produção", "Devolução de Cliente", "Ajuste de Inventário", "Outro"],
+    "Saída": ["Venda Avulsa", "Perda/Quebra", "Vencimento", "Ajuste de Inventário", "Outro"],
+}
+
+# Cor de destaque por categoria (usada na tabela de movimentações)
+MOVEMENT_CATEGORY_COLORS: dict[str, str] = {
+    "Perda/Quebra": "#EF4444",
+    "Vencimento": "#F97316",
+    "Produção": "#8B5CF6",
+    "Compra/Reposição": "#10B981",
+    "Devolução de Cliente": "#0EA5E9",
+    "Venda Avulsa": "#10B981",
+    "Ajuste de Inventário": "#6B7280",
+    "Outro": "#6B7280",
+}
+
+
+class StockMovementDialog(QDialog):
+    """Diálogo para registrar manualmente uma movimentação de estoque
+    (entrada, saída, perda/quebra, vencimento, ajuste, produção, etc)."""
+
+    def __init__(self, db: DB, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.db = db
+        from core.config import load_config
+        theme_cfg = load_config().get("theme", "light")
+        if theme_cfg == "dark":
+            self.setStyleSheet("""
+                QDialog { background-color: #2b2b2b; color: #ffffff; }
+                QLabel { color: #ffffff; }
+                QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {
+                    background-color: #3c3c3c; border: 1px solid #555555;
+                    padding: 5px; border-radius: 3px; color: #ffffff;
+                }
+                QComboBox QAbstractItemView { background: #3c3c3c; color: #ffffff; selection-background-color: #555555; }
+                QPushButton { background: #1a2031; color: #ffffff; padding: 8px 14px; border: 1px solid #2c3550 !important; border-radius: 10px; }
+                QPushButton:hover { background: #252c45; border: 1px solid #3d4a70 !important; }
+                QPushButton:pressed { background: #333b5e; border: 1px solid #4a5480 !important; }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog { background-color: #ffffff; color: #111827; }
+                QLabel { color: #111827; }
+                QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {
+                    background-color: #ffffff; border: 1px solid #d1d5db;
+                    padding: 5px; border-radius: 3px; color: #111827;
+                }
+                QComboBox QAbstractItemView { background: #ffffff; color: #111827; selection-background-color: #e8eefc; }
+                QPushButton { background: #e5e7eb; color: #111827; padding: 8px 14px; border: 1px solid #d1d5db !important; border-radius: 10px; }
+                QPushButton:hover { background: #dbeafe; border: 1px solid #bfdbfe !important; }
+                QPushButton:pressed { background: #c7d2fe; border: 1px solid #a5b4fc !important; }
+            """)
+
+        self.setWindowTitle("Nova Movimentação de Estoque")
+        self.setMinimumWidth(420)
+        layout = QFormLayout(self)
+
+        self.tipo: QComboBox = QComboBox()
+        self.tipo.addItems(["Entrada", "Saída"])
+        cast(Any, self.tipo.currentTextChanged).connect(self._on_tipo_changed)
+        layout.addRow("Tipo:", self.tipo)
+
+        self.categoria: QComboBox = QComboBox()
+        layout.addRow("Categoria:", self.categoria)
+
+        self.produto: QComboBox = QComboBox()
+        self._load_products()
+        cast(Any, self.produto.currentIndexChanged).connect(self._on_produto_changed)
+        layout.addRow("Produto:", self.produto)
+
+        self.estoque_atual_label = QLabel("—")
+        self.estoque_atual_label.setStyleSheet("color: #6b7280; font-style: italic;")
+        layout.addRow("Estoque atual:", self.estoque_atual_label)
+
+        self.quantidade: QSpinBox = QSpinBox()
+        self.quantidade.setMinimum(1)
+        self.quantidade.setMaximum(999999)
+        layout.addRow("Quantidade:", self.quantidade)
+
+        self.data: QDateEdit = QDateEdit()
+        self.data.setDate(QDate.currentDate())
+        self.data.setMaximumDate(QDate.currentDate())
+        self.data.setCalendarPopup(True)
+        self.data.setDisplayFormat("dd/MM/yyyy")
+        layout.addRow("Data:", self.data)
+
+        self.observacoes: QLineEdit = QLineEdit()
+        self.observacoes.setPlaceholderText("Opcional - detalhes adicionais")
+        layout.addRow("Observações:", self.observacoes)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        cast(Any, btns.accepted).connect(self._validate_and_accept)
+        cast(Any, btns.rejected).connect(self.reject)
+        layout.addRow(btns)
+
+        self._on_tipo_changed("Entrada")
+        self._on_produto_changed(self.produto.currentIndex())
+
+    def _on_tipo_changed(self, tipo: str) -> None:
+        self.categoria.clear()
+        self.categoria.addItems(MOVEMENT_CATEGORIES.get(tipo, []))
+
+    def _load_products(self) -> None:
+        rows = self.db.query("SELECT id, name, stock FROM products ORDER BY name")
+        for r in rows:
+            self.produto.addItem(r["name"], (int(r["id"]), int(r["stock"])))
+
+    def _on_produto_changed(self, _index: int) -> None:
+        data = self.produto.currentData()
+        if data:
+            _, stock = data
+            self.estoque_atual_label.setText(f"{stock} un")
+        else:
+            self.estoque_atual_label.setText("—")
+
+    def _validate_and_accept(self) -> None:
+        if self.produto.currentData() is None:
+            show_message(self, "Aviso", "Cadastre um produto antes de registrar uma movimentação.", ("OK",))
+            return
+        if self.tipo.currentText() == "Saída":
+            _, stock = self.produto.currentData()
+            if self.quantidade.value() > stock:
+                show_message(
+                    self, "Estoque insuficiente",
+                    f"Estoque disponível: {stock} un. Não é possível dar saída de {self.quantidade.value()} un.",
+                    ("OK",)
+                )
+                return
+        self.accept()
+
+    def get_values(self) -> dict[str, Any]:
+        prod_id, _ = self.produto.currentData()
+        return {
+            "type": "entrada" if self.tipo.currentText() == "Entrada" else "saida",
+            "category": self.categoria.currentText(),
+            "product_id": prod_id,
+            "product_name": self.produto.currentText(),
+            "quantity": self.quantidade.value(),
+            "date": self.data.date().toString("yyyy-MM-dd"),
+            "notes": self.observacoes.text().strip() or None,
+        }
+
+
+class StockMovementsPage(BasePage):
+    """Movimentação de estoque: histórico completo de entradas, saídas e produção,
+    com registro manual (inclusive perdas/quebras - antes impossível de registrar)."""
+
+    FILTERS: list[tuple[str, str]] = [
+        ("todas", "📋 Todas"),
+        ("entrada", "📥 Entradas"),
+        ("saida", "📤 Saídas"),
+        ("producao", "🏭 Produção"),
+        ("perda", "💔 Perdas"),
+    ]
+
+    def __init__(self, db: DB, toast_cb: Optional[Callable[[str], None]] = None) -> None:
+        super().__init__("Movimentação", "Entradas, saídas, produção e perdas de estoque")
+        self.db = db
+        self.toast_cb = toast_cb
+        self.current_filter = "todas"
+        bl = QVBoxLayout(self.body)
+
+        # --- Cards de resumo ---
+        self.cards_box = QHBoxLayout()
+        self.card_entradas = self._create_stat_card("📥 Entradas hoje", "0", "#10B981")
+        self.card_saidas = self._create_stat_card("📤 Saídas hoje", "0", "#3B82F6")
+        self.card_producao = self._create_stat_card("🏭 Produção (mês)", "0", "#8B5CF6")
+        self.card_perdas = self._create_stat_card("💔 Perdas (mês)", "0 (R$ 0,00)", "#EF4444")
+        for card in (self.card_entradas, self.card_saidas, self.card_producao, self.card_perdas):
+            self.cards_box.addWidget(card)
+        bl.addLayout(self.cards_box)
+
+        # --- Ações ---
+        actions = QHBoxLayout()
+        self.btn_add = QPushButton("+ Nova Movimentação")
+        cast(Any, self.btn_add.clicked).connect(self._add_movement)
+        actions.addWidget(self.btn_add)
+        self.btn_del = QPushButton("🗑️ Excluir")
+        cast(Any, self.btn_del.clicked).connect(self._delete_movement)
+        actions.addWidget(self.btn_del)
+        self.btn_export = QPushButton("📊 Exportar Excel")
+        cast(Any, self.btn_export.clicked).connect(self._export_excel)
+        actions.addWidget(self.btn_export)
+        actions.addStretch(1)
+        bl.addLayout(actions)
+
+        # --- Filtros (chips) + busca + período ---
+        from PyQt6.QtWidgets import QButtonGroup
+        filters_box = QHBoxLayout()
+        self.filter_group = QButtonGroup(self)
+        self.filter_group.setExclusive(True)
+        self.filter_buttons: dict[str, QPushButton] = {}
+        chip_qss = """
+            QPushButton {
+                border-radius: 14px;
+                padding: 6px 14px;
+                border: 1px solid #d1d5db;
+                background: #f3f4f6;
+                color: #374151;
+            }
+            QPushButton:checked {
+                background: #8b5cf6;
+                color: white;
+                border-color: #8b5cf6;
+                font-weight: 600;
+            }
+        """
+        for key, label_txt in self.FILTERS:
+            btn = QPushButton(label_txt)
+            btn.setCheckable(True)
+            btn.setStyleSheet(chip_qss)
+            self.filter_group.addButton(btn)
+            self.filter_buttons[key] = btn
+            filters_box.addWidget(btn)
+        self.filter_buttons["todas"].setChecked(True)
+        cast(Any, self.filter_group.buttonClicked).connect(self._on_filter_clicked)
+        filters_box.addStretch(1)
+
+        filters_box.addWidget(QLabel("Período:"))
+        self.period_combo = QComboBox()
+        self.period_combo.addItems(["Hoje", "7 dias", "30 dias", "Tudo"])
+        self.period_combo.setCurrentText("30 dias")
+        cast(Any, self.period_combo.currentTextChanged).connect(lambda _t: self.refresh())
+        filters_box.addWidget(self.period_combo)
+        bl.addLayout(filters_box)
+
+        search_box = QHBoxLayout()
+        search_box.addWidget(QLabel("Pesquisar produto:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Nome do produto…")
+        self.search_edit.setClearButtonEnabled(True)
+        cast(Any, self.search_edit.textChanged).connect(lambda _t: self.refresh())
+        search_box.addWidget(self.search_edit, 1)
+        bl.addLayout(search_box)
+
+        # --- Tabela ---
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Data", "Produto", "Tipo", "Categoria", "Quantidade", "Motivo", "Usuário"])
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        if header := self.table.horizontalHeader():
+            header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+            header.setStretchLastSection(True)
+        bl.addWidget(self.table)
+
+        self.refresh()
+
+        # Auto-atualização a cada 5 segundos (mesmo padrão das outras páginas de estoque)
+        self.auto_refresh_timer = QTimer(self)
+        self.auto_refresh_timer.timeout.connect(self.refresh)
+        self.auto_refresh_timer.start(5000)
+
+    def _create_stat_card(self, title: str, value: str, color: str) -> QFrame:
+        card = QFrame()
+        card.setObjectName("StatCard")
+        card.setStyleSheet(f"""
+            QFrame#StatCard {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {color}, stop:1 {color}dd);
+                border-radius: 10px;
+                padding: 15px;
+                min-height: 70px;
+                max-height: 80px;
+            }}
+            QLabel {{
+                color: white;
+                background: transparent;
+            }}
+        """)
+        layout = QVBoxLayout(card)
+        layout.setSpacing(3)
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 12px; font-weight: normal;")
+        layout.addWidget(title_label)
+        value_label = QLabel(value)
+        value_label.setStyleSheet("font-size: 20px; font-weight: bold;")
+        layout.addWidget(value_label)
+        layout.addStretch()
+        card.value_label = value_label  # type: ignore[attr-defined]
+        return card
+
+    def _on_filter_clicked(self, _btn: QPushButton) -> None:
+        for key, btn in self.filter_buttons.items():
+            if btn.isChecked():
+                self.current_filter = key
+                break
+        self.refresh()
+
+    def _period_clause(self) -> str:
+        period = self.period_combo.currentText()
+        if period == "Hoje":
+            return "DATE(sm.created_at) = DATE('now','localtime')"
+        if period == "7 dias":
+            return "DATE(sm.created_at) >= DATE('now','localtime','-7 days')"
+        if period == "30 dias":
+            return "DATE(sm.created_at) >= DATE('now','localtime','-30 days')"
+        return "1=1"
+
+    def _filter_clause(self) -> str:
+        if self.current_filter == "entrada":
+            return "sm.type = 'entrada'"
+        if self.current_filter == "saida":
+            return "sm.type = 'saida'"
+        if self.current_filter == "producao":
+            return "(sm.category = 'Produção' OR (sm.category IS NULL AND sm.reason LIKE 'Produção%'))"
+        if self.current_filter == "perda":
+            return "sm.category = 'Perda/Quebra'"
+        return "1=1"
+
+    def _refresh_summary_cards(self) -> None:
+        try:
+            row = self.db.query("""
+                SELECT
+                    COALESCE(SUM(CASE WHEN type='entrada' AND DATE(created_at)=DATE('now','localtime') THEN quantity ELSE 0 END), 0) AS entradas_hoje,
+                    COALESCE(SUM(CASE WHEN type='saida' AND DATE(created_at)=DATE('now','localtime') THEN quantity ELSE 0 END), 0) AS saidas_hoje,
+                    COALESCE(SUM(CASE WHEN (category='Produção' OR (category IS NULL AND reason LIKE 'Produção%'))
+                                    AND strftime('%Y-%m', created_at)=strftime('%Y-%m','now','localtime') THEN quantity ELSE 0 END), 0) AS producao_mes
+                FROM stock_movements
+            """)[0]
+            self.card_entradas.value_label.setText(str(int(row["entradas_hoje"])))  # type: ignore[attr-defined]
+            self.card_saidas.value_label.setText(str(int(row["saidas_hoje"])))  # type: ignore[attr-defined]
+            self.card_producao.value_label.setText(str(int(row["producao_mes"])))  # type: ignore[attr-defined]
+
+            perda_row = self.db.query("""
+                SELECT
+                    COALESCE(SUM(sm.quantity), 0) AS qtd,
+                    COALESCE(SUM(sm.quantity * COALESCE(p.price, 0)), 0) AS valor
+                FROM stock_movements sm
+                LEFT JOIN products p ON p.id = sm.product_id
+                WHERE sm.category = 'Perda/Quebra'
+                  AND strftime('%Y-%m', sm.created_at) = strftime('%Y-%m','now','localtime')
+            """)[0]
+            self.card_perdas.value_label.setText(  # type: ignore[attr-defined]
+                f"{int(perda_row['qtd'])} ({money(float(perda_row['valor']))})"
+            )
+        except Exception as e:
+            print(f"Erro ao atualizar cards de movimentação: {e}")
+
+    def refresh(self) -> None:
+        try:
+            self._refresh_summary_cards()
+
+            term = self.search_edit.text().strip()
+            where_parts = [self._period_clause(), self._filter_clause()]
+            params: list[Any] = []
+            if term:
+                where_parts.append("p.name LIKE ?")
+                params.append(f"%{term}%")
+            where_sql = " AND ".join(where_parts)
+
+            rows = self.db.query(f"""
+                SELECT sm.id, sm.type, sm.category, sm.quantity, sm.reason,
+                       sm.created_at, sm.created_by, sm.order_id, p.name AS product_name
+                FROM stock_movements sm
+                JOIN products p ON p.id = sm.product_id
+                WHERE {where_sql}
+                ORDER BY sm.created_at DESC, sm.id DESC
+                LIMIT 500
+            """, tuple(params))
+
+            self.table.setRowCount(0)
+            for r in rows:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, QTableWidgetItem(format_datetime(r["created_at"])))
+                self.table.setItem(row, 1, QTableWidgetItem(r["product_name"]))
+
+                tipo_txt = "Entrada" if r["type"] == "entrada" else "Saída"
+                tipo_item = QTableWidgetItem(tipo_txt)
+                tipo_item.setForeground(QColor("#10B981" if r["type"] == "entrada" else "#3B82F6"))
+                tipo_item.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+                self.table.setItem(row, 2, tipo_item)
+
+                categoria_txt = r["category"] or "—"
+                cat_item = QTableWidgetItem(categoria_txt)
+                cat_color = MOVEMENT_CATEGORY_COLORS.get(categoria_txt)
+                if cat_color:
+                    cat_item.setForeground(QColor(cat_color))
+                self.table.setItem(row, 3, cat_item)
+
+                self.table.setItem(row, 4, QTableWidgetItem(str(r["quantity"])))
+                self.table.setItem(row, 5, QTableWidgetItem(r["reason"] or ""))
+                self.table.setItem(row, 6, QTableWidgetItem(r["created_by"] or "—"))
+                self.table.setVerticalHeaderItem(row, QTableWidgetItem(str(r["id"])))
+        except Exception as e:
+            print(f"Erro no refresh de Movimentação: {e}")
+
+    def _add_movement(self) -> None:
+        dlg = StockMovementDialog(self.db, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            values = dlg.get_values()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Usa a data escolhida no diálogo mas preserva a hora atual, para manter
+            # a ordenação por created_at coerente mesmo em lançamentos retroativos.
+            movement_date = f"{values['date']} {now.split(' ')[1]}"
+            user = getattr(self.db, "current_user", None) or "unknown"
+
+            # Ajusta o estoque ANTES de gravar o movimento, e para saída usa um UPDATE
+            # condicional (WHERE stock >= ?) checando quantas linhas foram afetadas -
+            # a validação do diálogo lê o estoque só quando ele abriu, então duas
+            # movimentações quase simultâneas (ou o refresh automático da tela) podiam
+            # passar na validação com o mesmo valor "antigo" e ambas serem aplicadas,
+            # derrubando o estoque abaixo de zero. Esse UPDATE condicional fecha essa
+            # janela: só uma das duas consegue de fato decrementar.
+            if values["type"] == "entrada":
+                self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?",
+                                 (values["quantity"], values["product_id"]))
+            else:
+                cur_stock = self.db.execute(
+                    "UPDATE products SET stock = stock - ? WHERE id=? AND stock >= ?",
+                    (values["quantity"], values["product_id"], values["quantity"])
+                )
+                if cur_stock.rowcount == 0:
+                    current = self.db.query("SELECT stock FROM products WHERE id=?", (values["product_id"],))
+                    available = current[0]["stock"] if current else 0
+                    show_message(
+                        self, "Estoque insuficiente",
+                        f"Estoque disponível agora: {available} un. Não é possível dar saída de "
+                        f"{values['quantity']} un - outra movimentação pode ter alterado o estoque "
+                        f"enquanto este formulário estava aberto.",
+                        ("OK",)
+                    )
+                    return
+
+            cur = self.db.execute(
+                """INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (values["product_id"], values["type"], values["category"], values["quantity"],
+                 values["notes"], None, movement_date, str(user))
+            )
+            movement_id = cur.lastrowid
+
+            try:
+                self.db.audit_log(
+                    "stock_movement", movement_id, "create",
+                    details=f"{values['type']} | {values['category']} | produto={values['product_name']} | qtd={values['quantity']}"
+                )
+            except Exception:
+                pass
+
+            self.refresh()
+            if self.toast_cb:
+                verbo = "adicionadas" if values["type"] == "entrada" else "removidas"
+                self.toast_cb(f"✅ {values['quantity']} un {verbo} ({values['category']}) - {values['product_name']}")
+        except Exception as e:
+            show_message(self, "Erro ao registrar movimentação", str(e), ("OK",))
+
+    def _selected_movement_ids(self) -> list[int]:
+        # Antes só existia _selected_movement_id() (currentRow(), uma linha), então
+        # selecionar várias movimentações e clicar Excluir só apagava a última focada.
+        ids: list[int] = []
+        for index in self.table.selectionModel().selectedRows():
+            vh = self.table.verticalHeaderItem(index.row())
+            if vh:
+                try:
+                    ids.append(int(vh.text()))
+                except (ValueError, AttributeError):
+                    pass
+        return list(dict.fromkeys(ids))
+
+    def _delete_movement(self) -> None:
+        mov_ids = self._selected_movement_ids()
+        if not mov_ids:
+            if self.toast_cb:
+                self.toast_cb("Selecione uma ou mais movimentações para excluir")
+            return
+        try:
+            count = len(mov_ids)
+            msg = "Excluir esta movimentação? O estoque será ajustado de volta." if count == 1 \
+                else f"Excluir {count} movimentações selecionadas? O estoque de cada produto será ajustado de volta."
+            res = show_message(self, "Confirmação", msg, ("Não", "Sim"), default=1)
+            if res != 1:
+                return
+
+            deleted = 0
+            blocked = 0
+            # Agrupa tudo em uma única transação para não travar a janela numa seleção grande
+            with self.db.transaction():
+                for mov_id in mov_ids:
+                    row = self.db.query("SELECT product_id, type, quantity, order_id, category FROM stock_movements WHERE id=?", (mov_id,))
+                    if not row:
+                        continue
+                    data = row[0]
+                    if data["order_id"] is not None:
+                        blocked += 1
+                        continue
+
+                    # Reverte o efeito no estoque (simétrico ao que foi feito na criação)
+                    reverse_delta = -data["quantity"] if data["type"] == "entrada" else data["quantity"]
+                    self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (reverse_delta, data["product_id"]))
+                    self.db.execute("DELETE FROM stock_movements WHERE id=?", (mov_id,))
+                    deleted += 1
+                    try:
+                        self.db.audit_log("stock_movement", mov_id, "delete", details=f"revertido: {data['type']} {data['quantity']}un")
+                    except Exception:
+                        pass
+
+            self.refresh()
+            if self.toast_cb:
+                if deleted and not blocked:
+                    self.toast_cb("🗑️ Movimentação excluída e estoque ajustado" if deleted == 1
+                                   else f"🗑️ {deleted} movimentações excluídas e estoque ajustado")
+                elif deleted and blocked:
+                    self.toast_cb(f"🗑️ {deleted} excluída(s); {blocked} bloqueada(s) por serem geradas por pedido")
+                elif blocked:
+                    show_message(
+                        self, "Não é possível excluir",
+                        "A(s) movimentação(ões) selecionada(s) foi(ram) gerada(s) automaticamente por um pedido "
+                        "e não pode(m) ser excluída(s) aqui - gerencie pelo pedido correspondente na tela de Pedidos.",
+                        ("OK",)
+                    )
+        except Exception as e:
+            show_message(self, "Erro ao excluir", str(e), ("OK",))
+
+    def _export_excel(self) -> None:
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+
+            term = self.search_edit.text().strip()
+            where_parts = [self._period_clause(), self._filter_clause()]
+            params: list[Any] = []
+            if term:
+                where_parts.append("p.name LIKE ?")
+                params.append(f"%{term}%")
+            where_sql = " AND ".join(where_parts)
+
+            rows = self.db.query(f"""
+                SELECT sm.created_at, p.name AS product_name, sm.type, sm.category,
+                       sm.quantity, sm.reason, sm.created_by
+                FROM stock_movements sm
+                JOIN products p ON p.id = sm.product_id
+                WHERE {where_sql}
+                ORDER BY sm.created_at DESC
+            """, tuple(params))
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Movimentações"
+            headers = ["Data", "Produto", "Tipo", "Categoria", "Quantidade", "Motivo", "Usuário"]
+            ws.append(headers)
+            for col in range(1, len(headers) + 1):
+                cell = ws.cell(row=1, column=col)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="8B5CF6", end_color="8B5CF6", fill_type="solid")
+                cell.alignment = Alignment(horizontal="center")
+
+            for r in rows:
+                ws.append([
+                    format_datetime(r["created_at"]),
+                    r["product_name"],
+                    "Entrada" if r["type"] == "entrada" else "Saída",
+                    r["category"] or "",
+                    r["quantity"],
+                    r["reason"] or "",
+                    r["created_by"] or "",
+                ])
+
+            for col_cells in ws.columns:
+                length = max((len(str(c.value)) for c in col_cells if c.value is not None), default=10)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 12), 40)
+
+            default_name = f"movimentacoes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            path, _ = QFileDialog.getSaveFileName(self, "Exportar Movimentações", default_name, "Excel (*.xlsx)")
+            if not path:
+                return
+            wb.save(path)
+            if self.toast_cb:
+                self.toast_cb(f"📊 Exportado: {os.path.basename(path)}")
+        except Exception as e:
+            show_message(self, "Erro ao exportar", str(e), ("OK",))
 
 
 class ProductionPage(BasePage):
@@ -3774,10 +4481,22 @@ class ProductionPage(BasePage):
                         "UPDATE products SET stock = stock + ? WHERE id = ?",
                         (quantity_change, product_id)
                     )
-                    
+                    # Registra em stock_movements para aparecer na tela de Movimentação
+                    # (antes esse ajuste de estoque via Produção não deixava rastro nenhum)
+                    try:
+                        mov_type = 'entrada' if quantity_change > 0 else 'saida'
+                        self.db.execute(
+                            "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (product_id, mov_type, 'Produção', abs(quantity_change), 'Ajuste na lista de produção', None,
+                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), getattr(self.db, "current_user", None) or "unknown")
+                        )
+                    except Exception:
+                        pass
+
                     if self.toast_cb:
                         self.toast_cb(f"Quantidade atualizada: {new_qty} (estoque {quantity_change:+d})")
-                    
+
                     # Atualiza a tabela de estoque
                     self._refresh_stock_table()
                 else:
@@ -3786,16 +4505,23 @@ class ProductionPage(BasePage):
             
             elif col == 2:  # Tamanho
                 new_size = item.text().strip()
-                
+
                 self.db.execute(
                     "UPDATE production_items SET size = ? WHERE id = ?",
                     (new_size, item_id)
                 )
-                
-                # Atualiza o display com formatação
-                item.setText(format_size(new_size) if new_size else "")
-                item.setData(Qt.ItemDataRole.UserRole, new_size)
-                
+
+                # Atualiza o display com formatação (bloqueando sinais: setText() dispara
+                # itemChanged de novo, reentrando neste handler com o texto já formatado
+                # - "20" virava "20 cm" e o segundo disparo gravava "20 cm" no banco em
+                # vez de "20", corrompendo o valor bruto a cada edição)
+                self.production_table.blockSignals(True)
+                try:
+                    item.setText(format_size(new_size) if new_size else "")
+                    item.setData(Qt.ItemDataRole.UserRole, new_size)
+                finally:
+                    self.production_table.blockSignals(False)
+
                 if self.toast_cb:
                     self.toast_cb(f"Tamanho atualizado: {format_size(new_size) if new_size else 'N/A'}")
             
@@ -3965,7 +4691,23 @@ class ProductionPage(BasePage):
             if self.toast_cb:
                 self.toast_cb(f"Nenhum pedido encontrado para {selected_date}")
             return
-        
+
+        # Confirma antes de apagar a lista atual: isso zera TODA a production_items
+        # (inclusive itens de outras datas e adicionados manualmente), não só os da
+        # data selecionada - sem aviso, um item manual criado minutos antes era
+        # destruído silenciosamente ao importar pedidos de qualquer data.
+        existing_count = self.db.query("SELECT COUNT(*) AS c FROM production_items")
+        if existing_count and int(existing_count[0]["c"]) > 0:
+            res = show_message(
+                self, "Confirmação",
+                f"Importar pedidos de {selected_date} vai substituir TODA a lista de "
+                f"produção atual ({existing_count[0]['c']} item(ns), incluindo os adicionados "
+                f"manualmente ou de outras datas). Continuar?",
+                ("Não", "Sim"), default=1
+            )
+            if res != 1:
+                return
+
         # Limpa a lista atual (do banco também)
         self.db.execute("DELETE FROM production_items")
         
@@ -3989,31 +4731,50 @@ class ProductionPage(BasePage):
             self.toast_cb(f"Importados {len(rows)} item(ns) de pedidos pendentes")
     
     def _remove_selected_item(self) -> None:
-        """Remove o item selecionado da lista de produção"""
-        selected = self.production_table.currentRow()
-        if selected >= 0:
-            product_name = self.production_table.item(selected, 0).text() if self.production_table.item(selected, 0) else ""
-            
-            # Busca o ID do item no banco
-            item_id = self.production_table.item(selected, 0).data(Qt.ItemDataRole.UserRole)
-            
-            if item_id:
-                # Remove do banco
-                self.db.execute("DELETE FROM production_items WHERE id = ?", (item_id,))
-                
-                # Atualiza a tabela
-                self._refresh_production_table()
-                
-                if self.toast_cb:
-                    self.toast_cb(f"Item removido: {product_name}")
-            else:
-                # Fallback: remove apenas da UI (não deveria acontecer)
-                self.production_table.removeRow(selected)
-                if self.toast_cb:
-                    self.toast_cb(f"Item removido (apenas da UI): {product_name}")
-        else:
+        """Remove o(s) item(ns) selecionado(s) da lista de produção.
+
+        Antes só olhava currentRow() (uma linha), então selecionar vários itens
+        e clicar em remover só apagava o último focado.
+        """
+        selected_rows = self.production_table.selectionModel().selectedRows()
+        if not selected_rows:
             if self.toast_cb:
-                self.toast_cb("Selecione um item para remover")
+                self.toast_cb("Selecione um ou mais itens para remover")
+            return
+
+        # Coleta tudo ANTES de remover linhas - remover no meio do loop invalidaria
+        # os índices das linhas seguintes
+        to_remove: list[tuple[int, Optional[Any], str]] = []
+        for index in selected_rows:
+            row = index.row()
+            name_item = self.production_table.item(row, 0)
+            product_name = name_item.text() if name_item else ""
+            item_id = name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
+            to_remove.append((row, item_id, product_name))
+
+        removed_names: list[str] = []
+        ui_only_rows: list[int] = []
+        with self.db.transaction():
+            for row, item_id, product_name in to_remove:
+                if item_id:
+                    self.db.execute("DELETE FROM production_items WHERE id = ?", (item_id,))
+                    removed_names.append(product_name)
+                else:
+                    # Fallback: remove apenas da UI (não deveria acontecer)
+                    ui_only_rows.append(row)
+
+        if removed_names:
+            self._refresh_production_table()
+        for row in sorted(ui_only_rows, reverse=True):
+            self.production_table.removeRow(row)
+
+        if self.toast_cb:
+            if len(removed_names) == 1:
+                self.toast_cb(f"Item removido: {removed_names[0]}")
+            elif removed_names:
+                self.toast_cb(f"{len(removed_names)} itens removidos")
+            elif ui_only_rows:
+                self.toast_cb(f"{len(ui_only_rows)} item(ns) removido(s) (apenas da UI)")
     
     def showEvent(self, event) -> None:
         """Inicia o timer quando a página é exibida"""
@@ -7464,6 +8225,7 @@ class CustomersPage(BasePage):
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Nome", "Telefone", "Endereço", "Observação", "Pedido", "Logs"])
         self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         if header := self.table.horizontalHeader():
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             # não esticar a última coluna; manter Logs compacto
@@ -7607,54 +8369,79 @@ class CustomersPage(BasePage):
                     show_message(self, "Pedido Negado", "Segunda não há expediente, pedido negado.", ("OK",))
                     return
                 
-                # Cria um pedido para CADA produto (mantém compatibilidade com schema)
-                pedidos_criados = []
-                for product in order_data["products"]:
-                    prod_id = product["product_id"]
-                    qty = product["quantity"]
-                    total = 0.0
-                    
-                    # Se tem múltiplos produtos, adiciona marcador no notes
-                    notes_with_marker = notes
-                    if len(order_data["products"]) > 1:
-                        notes_with_marker = f"LOTE:{len(order_data['products'])} itens | {notes or ''}".strip()
-                    
-                    # Verifica se deve reservar estoque agora ou depois
-                    today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                    should_reserve_now = delivery_date_obj <= today_obj
-                    
-                    # Cria pedido
-                    cur = self.db.execute("""
-                        INSERT INTO orders(order_number, customer_id, product_id, quantity,
-                                           delivery_date, total, status, label, notes, stock_reserved, created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                    """, (None, cust_id, prod_id, qty, d_iso, total, status, label, notes_with_marker, 1 if should_reserve_now else 0, now))
-                    oid = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
-                    
-                    if oid:
-                        self.db.execute("UPDATE orders SET order_number=? WHERE id=?", (oid, oid))
-                        pedidos_criados.append(oid)
-                    
-                    # Baixa estoque APENAS se data de entrega <= hoje
-                    if should_reserve_now:
-                        self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, prod_id))
-                        self.db.execute(
-                            "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                            (prod_id, 'saida', qty, 'Pedido', oid, now)
-                        )
-                    
-                    # Auditoria
-                    try:
-                        self.db.audit_log("order", oid, "create", details=f"cust={cust_id},prod={prod_id},qty={qty},total={total},reserved={should_reserve_now}")
-                    except Exception:
-                        pass
-                
+                # Verifica se deve reservar estoque agora ou depois
+                today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                should_reserve_now = delivery_date_obj <= today_obj
+
+                # Marcador de lote com ID único (não só a contagem de itens) - sem isso,
+                # dois lotes do mesmo cliente/data/status com o mesmo número de itens
+                # ficavam indistinguíveis para o agrupamento na lista e para a exclusão
+                # em lote, podendo apagar pedidos de um lote diferente do selecionado.
+                import uuid
+                batch_id = uuid.uuid4().hex[:8] if len(order_data["products"]) > 1 else None
+
+                # Cria um pedido para CADA produto (mantém compatibilidade com schema).
+                # Agrupado em uma única transação: além de ficar muito mais rápido num
+                # lote grande (um só commit em vez de vários por produto - sem isso a
+                # janela travava numa seleção/lote grande), a transação já desfaz tudo
+                # sozinha se algo falhar no meio. NÃO adicionar reversão manual aqui: já
+                # tentamos isso e causava dupla-reversão (a transação desfazia o estoque
+                # certo, e o código manual desfazia de novo por cima, duplicando o valor).
+                pedidos_criados: list[int] = []
+                try:
+                    with self.db.transaction():
+                        for product in order_data["products"]:
+                            prod_id = product["product_id"]
+                            qty = product["quantity"]
+                            total = 0.0
+
+                            notes_with_marker = notes
+                            if batch_id:
+                                notes_with_marker = f"LOTE:{batch_id}:{len(order_data['products'])} itens | {notes or ''}".strip()
+
+                            # Cria pedido
+                            cur = self.db.execute("""
+                                INSERT INTO orders(order_number, customer_id, product_id, quantity,
+                                                   delivery_date, total, status, label, notes, stock_reserved, created_at)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                            """, (None, cust_id, prod_id, qty, d_iso, total, status, label, notes_with_marker, 1 if should_reserve_now else 0, now))
+                            oid = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
+
+                            if oid:
+                                self.db.execute("UPDATE orders SET order_number=? WHERE id=?", (oid, oid))
+                                pedidos_criados.append(oid)
+
+                            # Baixa estoque APENAS se data de entrega <= hoje
+                            if should_reserve_now:
+                                self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, prod_id))
+                                self.db.execute(
+                                    "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
+                                    (prod_id, 'saida', qty, 'Pedido', oid, now)
+                                )
+
+                            # Auditoria
+                            try:
+                                self.db.audit_log("order", oid, "create", details=f"cust={cust_id},prod={prod_id},qty={qty},total={total},reserved={should_reserve_now}")
+                            except Exception:
+                                pass
+                except Exception as batch_error:
+                    # A transação já reverteu tudo no banco (nenhum pedido/estoque/
+                    # movimentação deste lote ficou persistido) - só falta avisar o usuário.
+                    show_message(
+                        self, "Erro ao salvar",
+                        f"Falha ao criar pedido(s) de {order_data['products'].__len__()} "
+                        f"produto(s): {batch_error}\n\n"
+                        f"Nenhum pedido deste lote foi salvo - a operação foi revertida.",
+                        ("OK",)
+                    )
+                    return
+
                 if self.dashboard_cb:
                     self.dashboard_cb()
                 if self.toast_cb:
                     qtd_produtos = len(pedidos_criados)
                     self.toast_cb(f"✅ {qtd_produtos} pedido(s) criado(s) com sucesso!")
-                    
+
             except Exception as e:
                 show_message(self, "Erro ao salvar", str(e), ("OK",))
 
@@ -7728,24 +8515,71 @@ class CustomersPage(BasePage):
                 show_message(self, "Erro ao atualizar", str(e), ("OK",))
 
     def delete(self) -> None:
-        cid = self.current_id()
-        if not cid:
+        # Antes só usava self.table.currentRow() (uma linha); selecionar vários
+        # clientes e clicar Excluir apagava só o último focado.
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
             return
-        res = show_message(self, "Confirmação", "Excluir este cliente?", ("Não", "Sim"), default=1)
-        if res == 1:
-            try:
-                self.db.execute("DELETE FROM customers WHERE id=?", (cid,))
-                if self.dashboard_cb:
-                    self.dashboard_cb()
-                self.refresh()
-                if self.toast_cb:
-                    self.toast_cb("Cliente excluído")
+        cids: list[int] = []
+        for index in selected_rows:
+            vh = self.table.verticalHeaderItem(index.row())
+            if vh:
                 try:
-                    self.db.audit_log("customer", cid, "delete", details=None)
-                except Exception:
+                    cids.append(int(vh.text()))
+                except (ValueError, AttributeError):
                     pass
-            except Exception as e:
-                show_message(self, "Erro ao excluir", str(e), ("OK",))
+        cids = list(dict.fromkeys(cids))
+        if not cids:
+            return
+
+        count = len(cids)
+        msg = "Excluir este cliente?" if count == 1 else f"Excluir {count} clientes selecionados?"
+        res = show_message(self, "Confirmação", msg, ("Não", "Sim"), default=1)
+        if res != 1:
+            return
+
+        deleted = 0
+        blocked: list[str] = []
+        # Agrupa tudo em uma única transação para não travar a janela numa seleção grande
+        with self.db.transaction():
+            for cid in cids:
+                try:
+                    # Pré-checagem: sem isso, excluir um cliente com pedidos vinculados
+                    # falhava silenciosamente (IntegrityError da FK, engolido pelo except
+                    # genérico abaixo) e o usuário só via "0 clientes excluídos" sem
+                    # explicação nenhuma.
+                    deps = self.db.query("SELECT COUNT(*) AS c FROM orders WHERE customer_id=?", (cid,))
+                    if deps and deps[0]["c"] > 0:
+                        name_row = self.db.query("SELECT name FROM customers WHERE id=?", (cid,))
+                        blocked.append(name_row[0]["name"] if name_row else str(cid))
+                        continue
+
+                    self.db.execute("DELETE FROM customers WHERE id=?", (cid,))
+                    deleted += 1
+                    try:
+                        self.db.audit_log("customer", cid, "delete", details=None)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Erro ao excluir cliente #{cid}: {e}")
+
+        if self.dashboard_cb:
+            self.dashboard_cb()
+        self.refresh()
+        if self.toast_cb:
+            if deleted and not blocked:
+                self.toast_cb("Cliente excluído" if deleted == 1 else f"{deleted} clientes excluídos")
+            elif deleted and blocked:
+                self.toast_cb(f"{deleted} excluído(s), {len(blocked)} bloqueado(s) por ter pedidos vinculados")
+            elif blocked:
+                self.toast_cb("Nenhum cliente excluído (todos têm pedidos vinculados)")
+        if blocked:
+            show_message(
+                self, "Aviso",
+                "Cliente(s) com pedidos vinculados não foram excluídos: " + ", ".join(blocked) +
+                ". Exclua/ajuste os pedidos primeiro.",
+                ("OK",)
+            )
 
 class OrdersPage(BasePage):
     """Página de Pedidos com CRUD básico e baixa/ajuste de estoque."""
@@ -8234,51 +9068,81 @@ class OrdersPage(BasePage):
                 # Verifica se deve reservar estoque agora ou depois
                 today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                 should_reserve_now = delivery_date_obj <= today_obj
-                
-                # Cria um pedido para CADA produto
-                pedidos_criados = []
-                for product in order_data["products"]:
-                    prod_id = product["product_id"]
-                    qty = product["quantity"]
-                    total = 0.0  # Não controlamos preços
-                    
-                    # Cria pedido
-                    cur = self.db.execute("""
-                        INSERT INTO orders(order_number, customer_id, product_id, quantity,
-                                           delivery_date, total, status, label, notes, stock_reserved, created_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                    """, (None, cust_id, prod_id, qty, d_iso, total, status, label, notes, 1 if should_reserve_now else 0, now))
-                    oid = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
-                    
-                    # Define order_number sequencial
-                    if oid:
-                        self.db.execute("UPDATE orders SET order_number=? WHERE id=?", (oid, oid))
-                        pedidos_criados.append(oid)
-                    
-                    # Baixa estoque APENAS se data de entrega <= hoje
-                    if should_reserve_now:
-                        self.db.execute(
-                            "UPDATE products SET stock = stock - ? WHERE id=?",
-                            (qty, prod_id)
-                        )
-                        self.db.execute(
-                            "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                            (prod_id, 'saida', qty, 'Pedido', oid, now)
-                        )
-                    
-                    # Auditoria
-                    try:
-                        self.db.audit_log("order", oid, "create", details=f"cust={cust_id},prod={prod_id},qty={qty},total={total},reserved={should_reserve_now}")
-                    except Exception:
-                        pass
-                
+
+                # Marcador de lote com ID único (não só a contagem de itens) - sem isso,
+                # dois lotes do mesmo cliente/data/status com o mesmo número de itens
+                # ficavam indistinguíveis para o agrupamento na lista e para a exclusão
+                # em lote, podendo apagar pedidos de um lote diferente do selecionado.
+                import uuid
+                batch_id = uuid.uuid4().hex[:8] if len(order_data["products"]) > 1 else None
+
+                # Cria um pedido para CADA produto. Agrupado em uma única transação:
+                # além de muito mais rápido num lote grande (um só commit em vez de
+                # vários por produto - sem isso a janela travava por vários segundos
+                # numa seleção grande), a transação já desfaz tudo sozinha se algo
+                # falhar no meio. NÃO adicionar reversão manual aqui: já tentamos isso
+                # e causava dupla-reversão (a transação desfazia o estoque certo, e o
+                # código manual desfazia de novo por cima, duplicando o valor).
+                pedidos_criados: list[int] = []
+                try:
+                    with self.db.transaction():
+                        for product in order_data["products"]:
+                            prod_id = product["product_id"]
+                            qty = product["quantity"]
+                            total = 0.0  # Não controlamos preços
+
+                            notes_with_marker = notes
+                            if batch_id:
+                                notes_with_marker = f"LOTE:{batch_id}:{len(order_data['products'])} itens | {notes or ''}".strip()
+
+                            # Cria pedido
+                            cur = self.db.execute("""
+                                INSERT INTO orders(order_number, customer_id, product_id, quantity,
+                                                   delivery_date, total, status, label, notes, stock_reserved, created_at)
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                            """, (None, cust_id, prod_id, qty, d_iso, total, status, label, notes_with_marker, 1 if should_reserve_now else 0, now))
+                            oid = int(cur.lastrowid) if cur and cur.lastrowid is not None else None
+
+                            # Define order_number sequencial
+                            if oid:
+                                self.db.execute("UPDATE orders SET order_number=? WHERE id=?", (oid, oid))
+                                pedidos_criados.append(oid)
+
+                            # Baixa estoque APENAS se data de entrega <= hoje
+                            if should_reserve_now:
+                                self.db.execute(
+                                    "UPDATE products SET stock = stock - ? WHERE id=?",
+                                    (qty, prod_id)
+                                )
+                                self.db.execute(
+                                    "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
+                                    (prod_id, 'saida', qty, 'Pedido', oid, now)
+                                )
+
+                            # Auditoria
+                            try:
+                                self.db.audit_log("order", oid, "create", details=f"cust={cust_id},prod={prod_id},qty={qty},total={total},reserved={should_reserve_now}")
+                            except Exception:
+                                pass
+                except Exception as batch_error:
+                    # A transação já reverteu tudo no banco (nenhum pedido/estoque/
+                    # movimentação deste lote ficou persistido) - só falta avisar o usuário.
+                    show_message(
+                        self, "Erro ao salvar",
+                        f"Falha ao criar pedido(s) de {len(order_data['products'])} "
+                        f"produto(s): {batch_error}\n\n"
+                        f"Nenhum pedido deste lote foi salvo - a operação foi revertida.",
+                        ("OK",)
+                    )
+                    return
+
                 self.refresh()
                 if self.dashboard_cb:
                     self.dashboard_cb()
                 if self.toast_cb:
                     qtd_produtos = len(pedidos_criados)
                     self.toast_cb(f"✅ {qtd_produtos} pedido(s) criado(s) com sucesso!")
-                    
+
             except Exception as e:
                 show_message(self, "Erro ao salvar", str(e), ("OK",))
 
@@ -8294,37 +9158,66 @@ class OrdersPage(BasePage):
         if d.exec() == QDialog.DialogCode.Accepted:
             try:
                 cust_id, prod_id, qty_new, d_iso, total, status, label, notes = d.get_values()
-                # reverte estoque do pedido antigo
-                old_qty = int(data["quantity"])
-                old_pid = int(data["product_id"])
-                if old_pid == prod_id:
-                    delta = qty_new - old_qty
-                    # se delta > 0, baixa; se delta < 0, devolve
-                    if delta != 0:
-                        mov_type = 'saida' if delta > 0 else 'entrada'
-                        self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (delta, prod_id))
+                # Mesma regra aplicada na criação: sem expediente às segundas.
+                # Sem esta checagem aqui, dava para criar um pedido válido e depois
+                # editar a data de entrega para uma segunda, contornando a regra.
+                delivery_date_obj = datetime.strptime(d_iso, "%Y-%m-%d")
+                if delivery_date_obj.weekday() == 0:
+                    show_message(self, "Pedido Negado", "Segunda não há expediente, pedido negado.", ("OK",))
+                    return
+                # Só ajusta estoque se este pedido já teve estoque reservado (baixado).
+                # Pedidos futuros (stock_reserved=0) nunca tiraram estoque, então editar
+                # sua quantidade/produto aqui não deve tocar em products.stock - quem vai
+                # baixar é o check_and_reserve_stock() quando a data de entrega chegar.
+                was_reserved = int(data["stock_reserved"] or 0) == 1
+                # Se o pedido ainda não tinha reservado estoque e a nova data de entrega
+                # já é hoje ou passada, reserva agora - sem isso o pedido ficava com
+                # stock_reserved=0 e o estoque só era baixado até 1h depois, quando o
+                # timer check_and_reserve_stock() rodasse de novo (relatórios de estoque
+                # ficavam errados nesse meio-tempo). Não trata o caso inverso (editar um
+                # pedido já reservado para uma data futura) - isso reverteria a baixa e
+                # não foi reportado como problema.
+                today_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                should_reserve_now = (not was_reserved) and delivery_date_obj <= today_obj
+
+                if was_reserved:
+                    old_qty = int(data["quantity"])
+                    old_pid = int(data["product_id"])
+                    if old_pid == prod_id:
+                        delta = qty_new - old_qty
+                        # se delta > 0, baixa; se delta < 0, devolve
+                        if delta != 0:
+                            mov_type = 'saida' if delta > 0 else 'entrada'
+                            self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (delta, prod_id))
+                            self.db.execute(
+                                "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
+                                (prod_id, mov_type, abs(delta), 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            )
+                    else:
+                        # devolve antigo
+                        self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (old_qty, old_pid))
                         self.db.execute(
                             "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                            (prod_id, mov_type, abs(delta), 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            (old_pid, 'entrada', old_qty, 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
                         )
-                else:
-                    # devolve antigo
-                    self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (old_qty, old_pid))
-                    self.db.execute(
-                        "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                        (old_pid, 'entrada', old_qty, 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    )
-                    # baixa novo
+                        # baixa novo
+                        self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty_new, prod_id))
+                        self.db.execute(
+                            "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
+                            (prod_id, 'saida', qty_new, 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        )
+                elif should_reserve_now:
                     self.db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty_new, prod_id))
                     self.db.execute(
                         "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                        (prod_id, 'saida', qty_new, 'Ajuste pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
+                        (prod_id, 'saida', qty_new, 'Pedido (reservado ao editar data)', oid, datetime.now().strftime("%Y-%m-%d %H:%M"))
                     )
 
+                new_stock_reserved = 1 if (was_reserved or should_reserve_now) else 0
                 self.db.execute("""
-                    UPDATE orders SET customer_id=?, product_id=?, quantity=?, delivery_date=?, total=?, status=?, label=?, notes=?
+                    UPDATE orders SET customer_id=?, product_id=?, quantity=?, delivery_date=?, total=?, status=?, label=?, notes=?, stock_reserved=?
                     WHERE id=?
-                """, (cust_id, prod_id, qty_new, d_iso, total, status, label, notes, oid))
+                """, (cust_id, prod_id, qty_new, d_iso, total, status, label, notes, new_stock_reserved, oid))
                 # auditoria: atualização do pedido (somente campos alterados)
                 try:
                     changes: list[str] = []
@@ -8451,40 +9344,48 @@ class OrdersPage(BasePage):
         if res == 1:
             try:
                 deleted_count = 0
-                for oid in order_ids:
-                    try:
-                        # Busca informações do pedido para devolver estoque
-                        row = self.db.query("SELECT product_id, quantity FROM orders WHERE id=?", (oid,))
-                        if row:
-                            pid_value = row[0]["product_id"]
-                            qty = int(row[0]["quantity"])
-                            
-                            # Só devolve estoque se tiver product_id (pedidos normais)
-                            if pid_value is not None:
-                                pid = int(pid_value)
-                                self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (qty, pid))
-                        
-                        # Remove TODAS as dependências antes de excluir o pedido
-                        # 1. Remove movimentações de estoque relacionadas
-                        self.db.execute("DELETE FROM stock_movements WHERE order_id=?", (oid,))
-                        
-                        # 2. Remove logs de auditoria relacionados
-                        self.db.execute("DELETE FROM audit_logs WHERE entity='order' AND entity_id=?", (oid,))
-                        
-                        # 3. Exclui o pedido
-                        self.db.execute("DELETE FROM orders WHERE id=?", (oid,))
-                        
-                        # Registra a exclusão no log
+                # Agrupa tudo em uma única transação: sem isso, cada pedido fazia até 3
+                # commits síncronos (estoque + movimentação + o próprio pedido), e excluir
+                # uma seleção grande (ou vários lotes) travava a janela por vários segundos.
+                with self.db.transaction():
+                    for oid in order_ids:
                         try:
-                            self.db.audit_log("order", oid, "delete", details=None)
-                        except Exception:
-                            pass
-                        
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"Erro ao excluir pedido #{oid}: {e}")
-                        continue
-                
+                            # Busca informações do pedido para devolver estoque
+                            row = self.db.query("SELECT product_id, quantity, stock_reserved FROM orders WHERE id=?", (oid,))
+                            if row:
+                                pid_value = row[0]["product_id"]
+                                qty = int(row[0]["quantity"])
+                                was_reserved = int(row[0]["stock_reserved"] or 0) == 1
+
+                                # Só devolve estoque se tiver product_id (pedidos normais) E se o
+                                # estoque desse pedido já tinha sido reservado/baixado de fato -
+                                # senão soma estoque fantasma que nunca havia sido subtraído
+                                if pid_value is not None and was_reserved:
+                                    pid = int(pid_value)
+                                    self.db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (qty, pid))
+
+                            # Remove dependências antes de excluir o pedido
+                            # 1. Remove movimentações de estoque relacionadas
+                            self.db.execute("DELETE FROM stock_movements WHERE order_id=?", (oid,))
+
+                            # Não apaga audit_logs deste pedido (não há FK exigindo isso -
+                            # apagar aqui só destruía o histórico de criação/edição do pedido
+                            # bem antes de registrar a própria exclusão logo abaixo)
+
+                            # 2. Exclui o pedido
+                            self.db.execute("DELETE FROM orders WHERE id=?", (oid,))
+
+                            # Registra a exclusão no log
+                            try:
+                                self.db.audit_log("order", oid, "delete", details=None)
+                            except Exception:
+                                pass
+
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"Erro ao excluir pedido #{oid}: {e}")
+                            continue
+
                 self.refresh()
                 if self.dashboard_cb:
                     self.dashboard_cb()
@@ -9361,60 +10262,6 @@ class ReportsPage(BasePage):
         except Exception:
             pass
 
-class UpdateDialog(QDialog):
-    """Diálogo de progresso da atualização"""
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("Atualizando Sistema")
-        self.setModal(True)
-        self.setFixedSize(500, 150)
-        
-        layout = QVBoxLayout(self)
-        
-        self.label = QLabel("Preparando atualização...")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.label)
-        
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
-        
-        self.details = QLabel("")
-        self.details.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.details.setStyleSheet("color: #6b7280; font-size: 11px;")
-        layout.addWidget(self.details)
-        
-        # Aplica tema
-        try:
-            from core.config import load_config
-            config = load_config()
-            theme = config.get("theme", "light")
-            if theme == "dark":
-                self.setStyleSheet("""
-                    QDialog { background-color: #2b2b2b; color: #ffffff; }
-                    QLabel { color: #ffffff; }
-                    QProgressBar { background-color: #3c3c3c; border: 1px solid #555555; }
-                """)
-            else:
-                self.setStyleSheet("""
-                    QDialog { background-color: #ffffff; color: #111827; }
-                    QLabel { color: #111827; }
-                    QProgressBar { background-color: #f3f4f6; border: 1px solid #d1d5db; }
-                """)
-        except Exception:
-            pass
-    
-    def update_progress(self, percent: int, message: str) -> None:
-        """Atualiza o progresso"""
-        self.progress.setValue(percent)
-        self.label.setText(message)
-        if percent < 100:
-            self.details.setText(f"{percent}% concluído")
-        else:
-            self.details.setText("Concluído!")
-
-
 class SettingsPage(BasePage):
     def __init__(self, db: Database, app: QApplication, parent_window: QMainWindow,
                  toast_cb: Optional[Callable[[str], None]] = None,
@@ -9541,34 +10388,6 @@ class SettingsPage(BasePage):
         
         bl.addWidget(company_group)
         
-        # === Seção: Atualização ===
-        update_group = QFrame()
-        update_group.setObjectName("SettingsGroup")
-        update_layout = QVBoxLayout(update_group)
-        update_title = QLabel("<b>🔄 Atualização do Sistema</b>")
-        update_layout.addWidget(update_title)
-        
-        # Exibir versão atual
-        try:
-            from core.updater import CURRENT_VERSION
-            version_label = QLabel(f"Versão atual: <b>{CURRENT_VERSION}</b>")
-            version_label.setStyleSheet("color: #6b7280; font-size: 12px; margin-bottom: 8px;")
-            update_layout.addWidget(version_label)
-        except Exception:
-            pass
-        
-        # Botão de verificar atualização
-        self.btn_check_update = QPushButton("🔍 Verificar Atualizações")
-        cast(Any, self.btn_check_update.clicked).connect(self.check_for_updates)
-        update_layout.addWidget(self.btn_check_update)
-        
-        # Info sobre atualizações
-        update_info = QLabel("💡 O sistema baixa apenas os arquivos modificados (~500KB)")
-        update_info.setStyleSheet("color: #6b7280; font-size: 11px; margin-top: 5px;")
-        update_layout.addWidget(update_info)
-        
-        bl.addWidget(update_group)
-        
         # === Seção: Backup ===
         if backup_cb:
             backup_group = QFrame()
@@ -9691,6 +10510,10 @@ class SettingsPage(BasePage):
             if hasattr(self.parent_window, '_update_header_logo'):
                 self.parent_window._update_header_logo(dest_path)
             
+            # Atualizar ícone da janela
+            if hasattr(self.parent_window, '_setup_window_icon'):
+                self.parent_window._setup_window_icon()
+            
             if self.toast_cb:
                 self.toast_cb("✓ Logo da empresa atualizada")
                 
@@ -9733,141 +10556,16 @@ class SettingsPage(BasePage):
             if hasattr(self.parent_window, '_update_header_logo'):
                 self.parent_window._update_header_logo(None)
             
+            # Atualizar ícone da janela para voltar ao padrão
+            if hasattr(self.parent_window, '_setup_window_icon'):
+                self.parent_window._setup_window_icon()
+            
             if self.toast_cb:
                 self.toast_cb("✓ Logo removida")
                 
         except Exception as e:
             show_message(self.parent_window, 'Erro', f'Não foi possível remover a logo: {e}', ('OK',))
-    
-    def check_for_updates(self) -> None:
-        """Verifica se há atualizações disponíveis"""
-        try:
-            from core.updater import UpdateChecker, apply_update
-            from PyQt6.QtCore import QThread
-            
-            # Desabilita botão durante verificação
-            self.btn_check_update.setEnabled(False)
-            self.btn_check_update.setText("🔄 Verificando...")
-            
-            # Cria thread de verificação
-            class CheckThread(QThread):
-                def __init__(self, parent_widget):
-                    super().__init__()
-                    self.parent_widget = parent_widget
-                    self.has_update = False
-                    self.remote_version = None
-                    self.changelog = []
-                
-                def run(self):
-                    try:
-                        checker = UpdateChecker()
-                        self.has_update, self.remote_version, self.changelog = checker.check_for_updates()
-                    except Exception as e:
-                        self.has_update = False
-                        self.remote_version = None
-                        self.changelog = [f"Erro: {e}"]
-            
-            def on_check_finished():
-                # Reabilita botão
-                self.btn_check_update.setEnabled(True)
-                self.btn_check_update.setText("🔍 Verificar Atualizações")
-                
-                if check_thread.has_update:
-                    # Mostra diálogo com changelog
-                    changelog_text = "\n".join(f"• {item}" for item in check_thread.changelog)
-                    message = f"<b>Nova versão disponível: {check_thread.remote_version}</b><br><br>"
-                    message += f"<b>Novidades:</b><br>{changelog_text.replace(chr(10), '<br>')}<br><br>"
-                    message += "Deseja atualizar agora?"
-                    
-                    reply = show_message(
-                        self.parent_window,
-                        'Atualização Disponível',
-                        message,
-                        ('Sim', 'Não'),
-                        default=0
-                    )
-                    
-                    if reply == 0:  # Clicou em "Sim"
-                        self.perform_update()
-                else:
-                    if self.toast_cb:
-                        self.toast_cb("✓ Sistema está atualizado!")
-            
-            check_thread = CheckThread(self)
-            check_thread.finished.connect(on_check_finished)
-            check_thread.start()
-            
-        except Exception as e:
-            self.btn_check_update.setEnabled(True)
-            self.btn_check_update.setText("🔍 Verificar Atualizações")
-            show_message(self.parent_window, 'Erro', f'Erro ao verificar atualizações: {e}', ('OK',))
-    
-    def perform_update(self) -> None:
-        """Executa a atualização do sistema"""
-        try:
-            from core.updater import apply_update
-            from PyQt6.QtCore import QThread
-            
-            # Cria diálogo de progresso
-            progress_dialog = UpdateDialog(self.parent_window)
-            progress_dialog.show()
-            
-            # Cria thread de atualização
-            class UpdateThread(QThread):
-                progress_signal = pyqtSignal(int, str)
-                finished_signal = pyqtSignal(bool, str)
-                
-                def __init__(self):
-                    super().__init__()
-                
-                def run(self):
-                    try:
-                        def progress_callback(percent, message):
-                            self.progress_signal.emit(percent, message)
-                        
-                        success = apply_update(progress_callback)
-                        
-                        if success:
-                            self.finished_signal.emit(True, "Atualização concluída com sucesso!")
-                        else:
-                            self.finished_signal.emit(False, "Falha ao aplicar atualização.")
-                    except Exception as e:
-                        self.finished_signal.emit(False, f"Erro durante atualização: {e}")
-            
-            def on_progress(percent, message):
-                progress_dialog.update_progress(percent, message)
-            
-            def on_finished(success, message):
-                progress_dialog.close()
-                
-                if success:
-                    reply = show_message(
-                        self.parent_window,
-                        'Atualização Concluída',
-                        f'{message}\n\nO sistema precisa ser reiniciado. Reiniciar agora?',
-                        ('Sim', 'Não'),
-                        default=0
-                    )
-                    
-                    if reply == 0:  # Clicou em "Sim"
-                        # Reinicia aplicação
-                        from PyQt6.QtWidgets import QApplication
-                        QApplication.quit()
-                        os.execl(sys.executable, sys.executable, *sys.argv)
-                else:
-                    show_message(self.parent_window, 'Erro', message, ('OK',))
-            
-            update_thread = UpdateThread()
-            update_thread.progress_signal.connect(on_progress)
-            update_thread.finished_signal.connect(on_finished)
-            update_thread.start()
-            
-            # Salva referência para evitar garbage collection
-            self.update_thread = update_thread
-            
-        except Exception as e:
-            show_message(self.parent_window, 'Erro', f'Erro ao iniciar atualização: {e}', ('OK',))
-    
+
 
 class MainWindow(QMainWindow):
     user: Any
@@ -9910,18 +10608,31 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         
         # Tamanho automático baseado na tela disponível
-        from PyQt6.QtGui import QGuiApplication
-        screen = QGuiApplication.primaryScreen()
+        from PyQt6.QtGui import QGuiApplication, QCursor
+        # Usa a tela onde o cursor está (onde o usuário realmente está olhando),
+        # não sempre a "tela primária" do Windows - em setups com múltiplos
+        # monitores, a primária configurada no Windows pode não ser a que o
+        # usuário está usando, fazendo a janela abrir com tamanho calculado
+        # para um monitor mas aparecer (ou ser movida) para outro.
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen:
             screen_geometry = screen.availableGeometry()
-            # Define tamanho como 70% da tela disponível
-            width = int(screen_geometry.width() * 0.7)
-            height = int(screen_geometry.height() * 0.75)
+            # Define tamanho como 70%/75% da tela, mas dentro de limites absolutos
+            # razoáveis. Sem isso, em monitores muito grandes a janela ficava
+            # enorme com elementos de tamanho fixo (sidebar de 220px, botões,
+            # fontes) parecendo minúsculos e desproporcionais dentro dela; em
+            # monitores pequenos ficava espremida demais.
+            width = max(1000, min(int(screen_geometry.width() * 0.7), 1600))
+            height = max(650, min(int(screen_geometry.height() * 0.75), 950))
             self.resize(width, height)
             # Tamanho mínimo é 60% da tela ou 800x600 (o que for menor)
             min_width = min(int(screen_geometry.width() * 0.6), 800)
             min_height = min(int(screen_geometry.height() * 0.65), 600)
             self.setMinimumSize(min_width, min_height)
+            # Centraliza explicitamente na tela onde a janela vai aparecer
+            x = screen_geometry.x() + (screen_geometry.width() - width) // 2
+            y = screen_geometry.y() + (screen_geometry.height() - height) // 2
+            self.move(x, y)
         else:
             # Fallback caso não consiga detectar a tela
             self.resize(1100, 700)
@@ -9997,7 +10708,8 @@ class MainWindow(QMainWindow):
         # Seed inicial + backup automático (após 1 hora)
         self._seed()
         self._setup_auto_backup_hourly()
-        
+        self._setup_stock_reservation_check()
+
         # Iniciar servidor web em thread separada
         self._start_web_server()
 
@@ -10008,8 +10720,8 @@ class MainWindow(QMainWindow):
         self.sidebar: QListWidget = QListWidget()
         self.sidebar.setObjectName("Sidebar")
         self.sidebar.setIconSize(QSize(20, 20))
-        # Ordem do menu: Dashboard, Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
-        labels = ["Dashboard", "Clientes", "Pronta entrega", "Produção", "Pedidos", "Produtos", "Configurações"]
+        # Ordem do menu: Dashboard, Clientes, Pronta entrega, Produção, Movimentação, Pedidos, Produtos, Configurações
+        labels = ["Dashboard", "Clientes", "Pronta entrega", "Produção", "Movimentação", "Pedidos", "Produtos", "Configurações"]
         for name in labels:
             item = QListWidgetItem(name)
             # Usa função segura para ícones
@@ -10019,6 +10731,7 @@ class MainWindow(QMainWindow):
                 "Produtos": safe_qta_icon("ph.cake", color="#a3e635"),
                 "Clientes": safe_qta_icon("ph.users", color="#fca5a5"),
                 "Produção": safe_qta_icon("ph.factory", color="#f97316"),
+                "Movimentação": safe_qta_icon("ph.arrows-left-right", color="#38bdf8"),
                 "Pronta entrega": safe_qta_icon("ph.package", color="#22c55e"),
                 "Configurações": safe_qta_icon("ph.gear", color="#93c5fd"),
             }
@@ -10032,6 +10745,8 @@ class MainWindow(QMainWindow):
         # Header
         self.header = QWidget(); self.header.setObjectName("Header")
         header_l = QHBoxLayout(self.header)
+        header_l.setContentsMargins(16, 8, 16, 8)  # Margens para dar espa\u00e7o \u00e0 logo
+        header_l.setSpacing(12)  # Espa\u00e7amento entre elementos
         
         # Logo da empresa (se configurada)
         self.header_logo_label = None  # Referência para atualização dinâmica
@@ -10044,12 +10759,23 @@ class MainWindow(QMainWindow):
                     self.header_logo_label = QLabel()
                     pixmap = QPixmap(logo_path)
                     if not pixmap.isNull():
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                        self.header_logo_label.setFixedSize(48, 48)
-                        self.header_logo_label.setStyleSheet("padding: 4px; margin-right: 12px;")
+                        # Escala mantendo proporção com altura máxima de 64px
+                        scaled_pixmap = pixmap.scaled(200, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        self.header_logo_label.setPixmap(scaled_pixmap)
+                        # Define tamanho máximo mas permite que a imagem defina o tamanho real
+                        self.header_logo_label.setMaximumSize(200, 64)
+                        self.header_logo_label.setScaledContents(False)  # Não estica a imagem
+                        self.header_logo_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                         header_l.addWidget(self.header_logo_label)
+                    else:
+                        self.header_logo_label = None
+                else:
+                    self.header_logo_label = None
+            else:
+                self.header_logo_label = None
         except Exception as e:
             print(f"Erro ao carregar logo da empresa: {e}")
+            self.header_logo_label = None
         
         # Título (usar nome da empresa se configurado)
         try:
@@ -10059,8 +10785,13 @@ class MainWindow(QMainWindow):
             company_name = "Confeitaria"
         
         self.title_label = QLabel(company_name)
+        self.title_label.setObjectName("AppTitle")
         header_l.addWidget(self.title_label)
         header_l.addStretch(1)
+        
+        # Inicializa header_logo_label como None se ainda não existe
+        if not hasattr(self, 'header_logo_label') or self.header_logo_label is None:
+            self.header_logo_label = None
         
         # Banner de acesso ao painel web
         self.web_access_label = QLabel()
@@ -10092,10 +10823,18 @@ class MainWindow(QMainWindow):
         # Mostrar apenas o endereço de rede (formato do celular)
         banner_text = f"📱 Acesse pelo navegador do celular:\n    {url_rede}"
         self.web_access_label.setText(banner_text)
+        try:
+            from core.config import get_web_panel_token
+            panel_pin = get_web_panel_token()
+        except Exception:
+            panel_pin = None
+        self._web_panel_token = panel_pin
+        pin_line = f"\n🔑 PIN de acesso: {panel_pin}" if panel_pin else ""
         self.web_access_label.setToolTip(
             f"🌐 Acesso pela rede (celular): {url_rede}\n"
-            f"💻 Acesso local (este PC): {url_local}\n\n"
-            f"Clique para copiar o endereço\n"
+            f"💻 Acesso local (este PC): {url_local}"
+            f"{pin_line}\n\n"
+            f"Clique para copiar o endereço e o PIN\n"
             f"Clique 2x para abrir no navegador"
         )
         # Conectar clique simples para copiar e duplo clique para abrir
@@ -10121,21 +10860,24 @@ class MainWindow(QMainWindow):
         self.page_production: ProductionPage = ProductionPage(self.db, toast_cb=self.show_toast)
         # Nova página: Pronta entrega (estoque disponível)
         self.page_ready: ReadyStockPage = ReadyStockPage(self.db, toast_cb=self.show_toast)
+        # Nova página: Movimentação (entradas, saídas, produção e perdas de estoque)
+        self.page_movements: StockMovementsPage = StockMovementsPage(self.db, toast_cb=self.show_toast)
         self.page_reports: ReportsPage = ReportsPage(self.db)
         self.page_settings: SettingsPage = SettingsPage(self.db, cast(QApplication, QApplication.instance()), self, toast_cb=self.show_toast)
 
-        # Ordem deve bater com 'labels' da sidebar: Dashboard, Clientes, Pronta entrega, Produção, Pedidos, Produtos, Configurações
+        # Ordem deve bater com 'labels' da sidebar: Dashboard, Clientes, Pronta entrega, Produção, Movimentação, Pedidos, Produtos, Configurações
         self.pages.addWidget(self.page_dashboard)
         self.pages.addWidget(self.page_customers)
         self.pages.addWidget(self.page_ready)
         self.pages.addWidget(self.page_production)
+        self.pages.addWidget(self.page_movements)
         self.pages.addWidget(self.page_orders)
         self.pages.addWidget(self.page_products)
         self.pages.addWidget(self.page_settings)
 
         right_v.addWidget(self.pages)
-        # Rodapé com status de licença
-        self.footer = QLabel("© 2025 DWM System Developer. Todos os direitos reservados. | ⏳ Verificando licença...")
+        # Rodapé
+        self.footer = QLabel("© 2025 DWM System Developer. Todos os direitos reservados.")
         self.footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.footer.setStyleSheet("color: #888; font-size: 12px; margin-top: 8px;")
         right_v.addWidget(self.footer)
@@ -10178,16 +10920,20 @@ class MainWindow(QMainWindow):
             if logo_path and os.path.exists(logo_path):
                 pixmap = QPixmap(logo_path)
                 if not pixmap.isNull():
+                    # Escala mantendo proporção com altura máxima de 64px
+                    scaled_pixmap = pixmap.scaled(200, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                     # Se já existe o label, apenas atualizar a imagem
                     if self.header_logo_label:
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                        self.header_logo_label.setPixmap(scaled_pixmap)
                         self.header_logo_label.show()
                     else:
                         # Criar novo label
                         self.header_logo_label = QLabel()
-                        self.header_logo_label.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-                        self.header_logo_label.setFixedSize(48, 48)
-                        self.header_logo_label.setStyleSheet("padding: 4px; margin-right: 12px;")
+                        self.header_logo_label.setPixmap(scaled_pixmap)
+                        # Define tamanho máximo mas permite que a imagem defina o tamanho real
+                        self.header_logo_label.setMaximumSize(200, 64)
+                        self.header_logo_label.setScaledContents(False)  # Não estica a imagem
+                        self.header_logo_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                         # Inserir no início do header
                         self.header.layout().insertWidget(0, self.header_logo_label)
             else:
@@ -10200,7 +10946,25 @@ class MainWindow(QMainWindow):
     def _setup_window_icon(self) -> None:
         """Configura o ícone da janela principal do aplicativo."""
         try:
-            # Tenta diferentes caminhos para o ícone
+            # Primeiro, tenta usar a logo customizada do banco de dados
+            try:
+                company_data = self.db.query("SELECT logo_path FROM company WHERE id=1")
+                if company_data and company_data[0]["logo_path"]:
+                    custom_logo = company_data[0]["logo_path"]
+                    if os.path.exists(custom_logo):
+                        icon = QIcon(custom_logo)
+                        if not icon.isNull():
+                            self.setWindowIcon(icon)
+                            # Também define o ícone da aplicação para toda a sessão
+                            app = QApplication.instance()
+                            if app and hasattr(app, 'setWindowIcon'):
+                                app.setWindowIcon(icon)
+                            print(f"Ícone customizado carregado: {custom_logo}")
+                            return
+            except Exception as e:
+                print(f"Aviso: Não foi possível carregar logo customizada: {e}")
+            
+            # Fallback: tenta diferentes caminhos para o ícone padrão
             icon_paths = [
                 os.path.join(os.path.dirname(__file__), 'assets', 'icons', 'logo.ico'),
                 os.path.join(base_dir, 'assets', 'icons', 'logo.ico'),
@@ -10218,7 +10982,7 @@ class MainWindow(QMainWindow):
                         app = QApplication.instance()
                         if app and hasattr(app, 'setWindowIcon'):
                             app.setWindowIcon(icon)
-                        print(f"Ícone carregado com sucesso: {icon_path}")
+                        print(f"Ícone padrão carregado: {icon_path}")
                         return
             
             print("Aviso: Nenhum arquivo de ícone encontrado nos caminhos esperados")
@@ -10826,7 +11590,27 @@ class MainWindow(QMainWindow):
         
         # Agendar reconfiguração após primeiro backup
         QTimer.singleShot(301000, set_hourly_backup)  # 5min + 1seg
-    
+
+    def _setup_stock_reservation_check(self) -> None:
+        """Roda check_and_reserve_stock() ao iniciar e depois a cada hora.
+
+        Sem isso, pedidos com data de entrega futura nunca tinham o estoque
+        baixado automaticamente quando a data chegava - a função existia mas
+        nunca era chamada em lugar nenhum.
+        """
+        def run_check():
+            try:
+                processed = check_and_reserve_stock(self.db)
+                if processed:
+                    self.show_toast(f"📦 Estoque reservado para {processed} pedido(s)")
+            except Exception as e:
+                print(f"⚠️ Erro ao checar reservas de estoque: {e}")
+
+        QTimer.singleShot(2000, run_check)  # roda logo após abrir a janela principal
+        self.stock_reservation_timer = QTimer(self)
+        self.stock_reservation_timer.timeout.connect(run_check)
+        self.stock_reservation_timer.start(3600000)  # a cada 1 hora
+
     def _start_web_server(self) -> None:
         """Inicia o servidor web Flask em uma thread separada para o Painel da Cozinha"""
         try:
@@ -10851,33 +11635,42 @@ class MainWindow(QMainWindow):
                 return
             
             from core.web_server import start_server
-            
+            from core.config import get_database_path, get_web_panel_token
+
             # Diretório web (HTML, CSS, JS, imagens)
             web_dir = os.path.join(APP_DIR, 'web')
-            
+
             # Verificar se o diretório web existe
             if not os.path.exists(web_dir):
                 print(f"❌ Diretório web não encontrado: {web_dir}")
                 print("   O Painel da Cozinha não será iniciado.")
                 return
-            
+
             print(f"✅ Diretório web encontrado: {web_dir}")
-            
-            # Usar o mesmo banco de dados da aplicação principal
-            db_path = DB_PATH
+
+            # Usar o mesmo banco de dados configurado pela aplicação principal
+            # (NÃO usar a constante DB_PATH: ela é calculada uma única vez na
+            # importação do módulo e fica desatualizada se o usuário trocar o
+            # caminho do banco - ex: apontar para um banco em rede - nas configurações)
+            db_path = get_database_path()
             print(f"✅ Banco de dados: {db_path}")
-            
+
             # Porta do servidor (padrão: 5000)
             port = 5000
             print(f"✅ Porta configurada: {port}")
-            
+
+            # PIN exigido para acessar a API pela rede (gerado/persistido em config.yaml)
+            access_token = get_web_panel_token()
+            self._web_panel_token = access_token
+            print(f"✅ PIN de acesso ao painel: {access_token}")
+
             # Não precisa atualizar o label novamente pois já foi configurado no __init__
-            
+
             # Iniciar servidor em thread daemon (termina quando o app principal fechar)
             print("🚀 Iniciando thread do servidor...")
             server_thread = threading.Thread(
                 target=start_server,
-                args=(db_path, web_dir, port),
+                args=(db_path, web_dir, port, access_token),
                 daemon=True,
                 name="WebServerThread"
             )
@@ -10930,8 +11723,10 @@ class MainWindow(QMainWindow):
                     return
                 clipboard = app.clipboard()
                 if clipboard:
-                    clipboard.setText(self._web_url_rede)
-                    self.show_toast(f"✅ Endereço copiado: {self._web_url_rede}")
+                    pin = getattr(self, '_web_panel_token', None)
+                    text = f"{self._web_url_rede} (PIN: {pin})" if pin else self._web_url_rede
+                    clipboard.setText(text)
+                    self.show_toast(f"✅ Copiado: {text}")
                 else:
                     self.show_toast("❌ Erro ao acessar área de transferência")
             else:
@@ -10959,7 +11754,7 @@ def qss_dark() -> str:
     return """
 * { font-family: 'Segoe UI', Arial; font-size: 14px; color: #ffffff; outline: none; }
 QMainWindow { background: #0f1115; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #101425, stop:1 #131a2e); border-bottom: 1px solid #1d2233; }
+#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #101425, stop:1 #131a2e); border-bottom: 1px solid #1d2233; min-height: 80px; padding: 8px 16px; }
 #AppTitle { color: #f0f3ff; font-size: 20px; font-weight: 600; }
 QLabel#subtitle { color: #9aa3b2; }
 
@@ -11266,7 +12061,7 @@ def qss_light() -> str:
     return """
 * { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
 QMainWindow { background: #f7f9fc; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ffffff, stop:1 #eef2ff); border-bottom: 1px solid #dfe3ec; }
+#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ffffff, stop:1 #eef2ff); border-bottom: 1px solid #dfe3ec; min-height: 80px; padding: 8px 16px; }
 #AppTitle { color: #1b2240; font-size: 20px; font-weight: 600; }
 QLabel#subtitle { color: #6b7280; }
 QLabel { color: #1f2937; }
@@ -11625,7 +12420,7 @@ def qss_pink() -> str:
     return """
 * { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
 QMainWindow { background: #fdf2f8; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #fce7f3, stop:1 #fbcfe8); border-bottom: 1px solid #f9a8d4; }
+#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #fce7f3, stop:1 #fbcfe8); border-bottom: 1px solid #f9a8d4; min-height: 80px; padding: 8px 16px; }
 #AppTitle { color: #831843; font-size: 20px; font-weight: 600; }
 QLabel#subtitle { color: #9f1239; }
 QLabel { color: #1f2937; }
@@ -11723,7 +12518,7 @@ def qss_purple() -> str:
     return """
 * { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
 QMainWindow { background: #faf5ff; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f3e8ff, stop:1 #e9d5ff); border-bottom: 1px solid #d8b4fe; }
+#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f3e8ff, stop:1 #e9d5ff); border-bottom: 1px solid #d8b4fe; min-height: 80px; padding: 8px 16px; }
 #AppTitle { color: #581c87; font-size: 20px; font-weight: 600; }
 QLabel#subtitle { color: #6b21a8; }
 QLabel { color: #1f2937; }
@@ -11821,7 +12616,7 @@ def qss_blue() -> str:
     return """
 * { font-family: 'Segoe UI', Arial; font-size: 14px; color: #1f2937; outline: none; }
 QMainWindow { background: #eff6ff; }
-#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #dbeafe, stop:1 #bfdbfe); border-bottom: 1px solid #93c5fd; }
+#Header { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #dbeafe, stop:1 #bfdbfe); border-bottom: 1px solid #93c5fd; min-height: 80px; padding: 8px 16px; }
 #AppTitle { color: #1e3a8a; font-size: 20px; font-weight: 600; }
 QLabel#subtitle { color: #1e40af; }
 QLabel { color: #1f2937; }
@@ -11942,7 +12737,7 @@ def main() -> None:
     # Auth/Login (usará seus módulos se existirem)
     try:
         from core.services import AuthService
-        from ui.dialogs.login_dialog import LoginDialog
+        from ui.dialogs.login_dialog import LoginDialog, load_saved_credentials
         from core.logger import log_event, log_error, log_warning
         from ui.dialogs.custom_messagebox import CustomMessageBox  # apenas para garantir disponibilidade
         from core.config import QSS_POPUP_DARK, QSS_POPUP_LIGHT, load_config, get_database_path
@@ -12141,12 +12936,28 @@ def main() -> None:
                     sys.exit(1)
 
     user = None
-    
+
     # Sempre exige login - usa a tela original do projeto
     if LoginDialog and AuthService:
         log_event("🔐 Iniciando processo de autenticação...")
         auth = AuthService(db)
-        while True:
+
+        # Login automático: se há credenciais salvas ("Lembrar credenciais") e o
+        # usuário não está segurando Shift (forma de forçar a tela de login para
+        # trocar de conta), tenta autenticar direto sem mostrar o diálogo.
+        shift_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if not shift_held:
+            saved = load_saved_credentials()
+            if saved:
+                auto_username, auto_password = saved
+                user = auth.authenticate(auto_username, auto_password)
+                if user:
+                    log_event(f"✅ Login automático: {auto_username} (Perfil: {user.role})")
+                else:
+                    log_warning(f"❌ Login automático falhou para '{auto_username}' "
+                                f"(credenciais salvas inválidas ou conta bloqueada) - pedindo login manual")
+
+        while user is None:
             dlg = LoginDialog()
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 username, password = dlg.get_values()
@@ -12154,10 +12965,9 @@ def main() -> None:
                 user = auth.authenticate(username, password)
                 if user:
                     log_event(f"✅ Login bem-sucedido: {username} (Perfil: {user.role})")
-                    break
                 else:
                     log_warning(f"❌ Login falhou para usuário: {username}")
-                    show_message(None, "Login falhou", "Usuário ou senha inválidos.", ("OK",))
+                    show_message(None, "Login falhou", auth.last_error or "Usuário ou senha inválidos.", ("OK",))
             else:
                 log_event("❌ Login cancelado pelo usuário")
                 sys.exit(0)
