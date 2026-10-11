@@ -2,8 +2,8 @@
 """
 Converte a imagem de logo de um cliente para .ico (ícone do executável e instalador).
 
-Uso: py convert_logo_to_ico.py <imagem> [saida.ico]
-Ex.: py convert_logo_to_ico.py assets/clientes/gih/logo.jpeg
+Uso: py tools/convert_logo_to_ico.py <imagem> [saida.ico]
+Ex.: py tools/convert_logo_to_ico.py assets/clientes/gih/logo.jpeg
      (saída padrão: assets/icons/logo.ico)
 """
 
@@ -41,7 +41,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         exit(1)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # raiz do projeto
     input_jpeg = sys.argv[1]
     output_ico = sys.argv[2] if len(sys.argv) > 2 else os.path.join(script_dir, "assets", "icons", "logo.ico")
     

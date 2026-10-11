@@ -8,7 +8,7 @@ import base64
 import ctypes
 from pathlib import Path
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QCheckBox
+from PyQt6.QtWidgets import QDialog, QLineEdit, QDialogButtonBox, QCheckBox
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -102,137 +102,79 @@ class LoginDialog(QDialog):
         ico_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icons", "logo.ico")
         if os.path.exists(ico_path):
             self.setWindowIcon(QIcon(ico_path))
-        # QSS customizado para login
-        # QSS exclusivo para tela de login, sempre fundo #debffa
-        self.setStyleSheet("""
-            QDialog {
-                background: #debffa;
-                border-radius: 16px;
-            }
-            QLabel {
-                color: #3d246c;
-                font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QLineEdit {
-                background: #f6edff;
-                color: #3d246c;
-                border: 1.5px solid #bfa2e0;
-                border-radius: 8px;
-                padding: 7px 12px;
-                font-size: 15px;
-            }
-            QLineEdit:focus {
-                border: 1.5px solid #a259e6;
-                background: #fff;
-            }
-            QDialogButtonBox QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #a259e6, stop:1 #debffa);
-                color: #fff;
-                border-radius: 8px;
-                padding: 7px 22px;
-                font-weight: bold;
-                font-size: 15px;
-                border: none;
-            }
-            QDialogButtonBox QPushButton:hover {
-                background: #c3a1e6;
-                color: #3d246c;
-            }
-            QDialogButtonBox QPushButton:pressed {
-                background: #a259e6;
-                color: #fff;
-            }
-            QLabel#ip-info {
-                background: #a259e6;
-                color: #fff;
-                border-radius: 8px;
-                padding: 10px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QCheckBox {
-                color: #3d246c;
-                font-size: 14px;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid #bfa2e0;
-                border-radius: 4px;
-                background: #f6edff;
-            }
-            QCheckBox::indicator:checked {
-                background: #a259e6;
-                border-color: #a259e6;
-            }
-        """)
+        # Visual vem do tema global (ui/theme/qss.py); aqui só ajustes de layout
         from PyQt6.QtWidgets import QLabel, QVBoxLayout
         from PyQt6.QtGui import QPixmap
+        self.setMinimumWidth(380)
         vbox = QVBoxLayout(self)
-        vbox.setContentsMargins(32, 24, 32, 24)
-        vbox.setSpacing(10)
-        
-        # Aviso de acesso pelo celular (no topo)
-        ip_info = QLabel()
-        ip_info.setObjectName("ip-info")
-        ip_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ip_info.setWordWrap(True)
-        
-        # Detectar IP local automaticamente
-        local_ip = self._get_local_ip()
-        ip_info.setText(f"📱 Acesse pelo navegador do celular:\nhttp://{local_ip}:5000")
-        vbox.addWidget(ip_info)
-        
+        vbox.setContentsMargins(36, 28, 36, 24)
+        vbox.setSpacing(8)
+
         # Logo - buscar logo customizada do banco primeiro
         logo_path = self._get_company_logo()
         if logo_path and os.path.exists(logo_path):
             logo = QLabel()
             pixmap = QPixmap(logo_path)
             if not pixmap.isNull():
-                logo.setPixmap(pixmap.scaledToHeight(150))
+                logo.setPixmap(pixmap.scaledToHeight(96, Qt.TransformationMode.SmoothTransformation))
                 logo.setAlignment(Qt.AlignmentFlag.AlignHCenter)
                 vbox.addWidget(logo)
-        
+                vbox.addSpacing(4)
+
         # Título - buscar nome da empresa do banco
         company_name = self._get_company_name()
-        title = QLabel(f"<b>{company_name}</b>")
+        title = QLabel(company_name)
+        title.setObjectName("PageTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        title.setStyleSheet("font-size: 18px; margin-bottom: 8px;")
         vbox.addWidget(title)
-        # Formulário
-        form = QFormLayout()
-        form.setSpacing(16)
+        subtitle = QLabel("Entre com seu usuário para continuar")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        vbox.addWidget(subtitle)
+        vbox.addSpacing(14)
+
+        # Formulário (rótulos acima dos campos)
         self.username = QLineEdit()
         self.username.setPlaceholderText("Digite seu usuário")
         self.password = QLineEdit(); self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setPlaceholderText("Digite sua senha")
-        form.addRow("Usuário:", self.username)
-        form.addRow("Senha:", self.password)
-        vbox.addLayout(form)
-        
+        for label_text, field in (("Usuário", self.username), ("Senha", self.password)):
+            lbl = QLabel(label_text)
+            lbl.setObjectName("CardTitle")
+            vbox.addWidget(lbl)
+            vbox.addWidget(field)
+            vbox.addSpacing(6)
+
         # Checkbox "Lembrar credenciais"
         self.remember_checkbox = QCheckBox("Lembrar credenciais")
-        self.remember_checkbox.setStyleSheet("margin-top: 8px; margin-bottom: 8px;")
         vbox.addWidget(self.remember_checkbox)
-
-        # Dica: com credenciais salvas, o próximo início entra direto sem mostrar
-        # esta tela. Segurar Shift ao abrir o app força esta tela a aparecer -
-        # é a forma de trocar de usuário ou desmarcar "lembrar".
-        hint = QLabel("Dica: segure Shift ao abrir o app para trocar de usuário")
-        hint.setStyleSheet("color: #6b5b8a; font-size: 11px;")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setWordWrap(True)
-        vbox.addWidget(hint)
 
         # Carregar credenciais salvas (se existirem)
         self._load_saved_credentials()
-        
+
         # Botões
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_ok = btns.button(QDialogButtonBox.StandardButton.Ok)
+        btn_ok.setText("Entrar")
+        btn_ok.setDefault(True)
+        btn_ok.setProperty("primary", True)
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Sair")
         btns.accepted.connect(self._on_accept)
         btns.rejected.connect(self.reject)
+        vbox.addSpacing(8)
         vbox.addWidget(btns)
+
+        # Rodapé: endereço do painel da cozinha e dica de troca de usuário.
+        # Com credenciais salvas, o próximo início entra direto sem mostrar esta
+        # tela; segurar Shift ao abrir o app força esta tela a aparecer.
+        vbox.addSpacing(10)
+        local_ip = self._get_local_ip()
+        footer = QLabel(f"📱 Painel da cozinha: http://{local_ip}:5000\n"
+                        "Dica: segure Shift ao abrir o app para trocar de usuário")
+        footer.setObjectName("Footer")
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setWordWrap(True)
+        vbox.addWidget(footer)
     
     def _get_company_name(self) -> str:
         """Busca o nome da empresa no banco de dados"""

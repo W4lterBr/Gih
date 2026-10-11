@@ -124,7 +124,7 @@
 #elif FileExists(ExeInFolder)
   #pragma message "Build detectado: PyInstaller --onedir em " + ExeInFolder
 #else
-  #error "ERRO: Nenhum executável encontrado! Execute build_complete.bat primeiro."
+  #error "ERRO: Nenhum executável encontrado! Execute build.bat primeiro."
 #endif
 
 [Setup]

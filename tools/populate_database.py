@@ -106,7 +106,8 @@ def criar_banco_exemplo():
     """Cria e popula o banco de dados com dados de exemplo"""
     
     # Caminho do banco
-    db_path = os.path.join(os.path.dirname(__file__), "confeitaria.db")
+    # Gera o banco de exemplo na raiz do projeto (pasta acima de tools/)
+    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "confeitaria.db")
     
     print(f"🗄️  Conectando ao banco: {db_path}")
     

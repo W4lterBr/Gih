@@ -13,7 +13,7 @@ Este guia explica como gerar o instalador do sistema com o banco de dados inclu�
    dir confeitaria.db
    
    # Se não existir, crie com dados de exemplo:
-   python populate_database.py
+   python tools/populate_database.py
    ```
 
 ### 2. **Dependências Instaladas**
@@ -143,7 +143,7 @@ No sistema instalado, vá para:
 dir confeitaria.db
 
 # Se não existir, crie:
-python populate_database.py
+python tools/populate_database.py
 ```
 
 ### **"PyInstaller não encontrado"**
