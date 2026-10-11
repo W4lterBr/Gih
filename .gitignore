@@ -30,3 +30,6 @@ github_token.txt
 .claude/
 Thumbs.db
 .DS_Store
+
+# Logo escolhido em cada instalação (Configurações > Empresa)
+assets/company/

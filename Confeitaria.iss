@@ -144,8 +144,8 @@ AppMutex=ConfeitariaAppMutex2023
 DisableProgramGroupPage=yes
 OutputDir=output
 OutputBaseFilename=Confeitaria_Setup_{#MyAppVersion}
-SetupIconFile={#IconsDir}\logo_gih.ico
-UninstallDisplayIcon={app}\assets\icons\logo_gih.ico
+SetupIconFile={#IconsDir}\logo.ico
+UninstallDisplayIcon={app}\assets\icons\logo.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -216,9 +216,9 @@ Source: "{#ProjectRoot}version.json"; DestDir: "{app}"; Flags: ignoreversion con
 Source: "{#ProjectRoot}confeitaria.db"; DestDir: "{#MyAppDataDir}\data"; Flags: onlyifdoesntexist skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo_gih.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo_gih.ico"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icons\logo.ico"; Tasks: desktopicon
 
 [Registry]
 ; Registrar protocolo customizado (confeitaria://)

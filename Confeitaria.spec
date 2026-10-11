@@ -80,7 +80,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\icons\\logo_gih.ico'],  # Ícone customizado da Confeitaria Gih
+    icon=['assets\\icons\\logo.ico'],  # Ícone padrão (neutro)
 )
 coll = COLLECT(
     exe,

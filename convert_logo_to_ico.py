@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Script para converter Logo gih.jpeg para formato .ico
-Necessário para usar como ícone do executável e instalador
+Converte a imagem de logo de um cliente para .ico (ícone do executável e instalador).
+
+Uso: py convert_logo_to_ico.py <imagem> [saida.ico]
+Ex.: py convert_logo_to_ico.py assets/clientes/gih/logo.jpeg
+     (saída padrão: assets/icons/logo.ico)
 """
 
 import os
@@ -34,9 +37,13 @@ def convert_jpeg_to_ico(input_path, output_path):
 
 if __name__ == "__main__":
     # Caminhos
+    import sys
+    if len(sys.argv) < 2:
+        print(__doc__)
+        exit(1)
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    input_jpeg = os.path.join(script_dir, "Logo gih.jpeg")
-    output_ico = os.path.join(script_dir, "assets", "icons", "logo_gih.ico")
+    input_jpeg = sys.argv[1]
+    output_ico = sys.argv[2] if len(sys.argv) > 2 else os.path.join(script_dir, "assets", "icons", "logo.ico")
     
     # Verifica se o arquivo de entrada existe
     if not os.path.exists(input_jpeg):
