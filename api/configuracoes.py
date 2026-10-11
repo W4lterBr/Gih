@@ -94,8 +94,11 @@ def _validar(p: Pedido, novo: bool) -> tuple[str, str, str]:
         raise ErroApi("Nome de usuário deve ter pelo menos 3 caracteres")
     if novo and not senha:
         raise ErroApi("Senha é obrigatória para novos usuários")
-    if senha and len(senha) < 4:
-        raise ErroApi("A senha deve ter pelo menos 4 caracteres")
+    if senha:
+        from core.senhas import problema_senha_nova
+        erro = problema_senha_nova(nome, senha)
+        if erro:
+            raise ErroApi(erro)
     if papel not in PAPEIS:
         raise ErroApi("Tipo de usuário inválido.")
     return nome, senha, papel
@@ -162,14 +165,15 @@ def excluir_usuario(p: Pedido) -> dict:
 
 @rota("PUT", "/minha-senha")
 def trocar_minha_senha(p: Pedido) -> dict:
-    """Qualquer usuário troca a própria senha (confirmando a atual)."""
+    """Qualquer usuário troca a própria senha (confirmando a atual). Também é a única
+    rota liberada enquanto a sessão está marcada para trocar a senha padrão."""
     from core.services import AuthService
-    db = contexto.db()
+    from api.sistema import gravar_senha_nova
     eu = p.usuario or {}
-    if not AuthService(db).authenticate(eu.get("username", ""), str(p.c("atual") or "")):
-        raise ErroApi("Senha atual incorreta.")
-    nova = str(p.c("nova") or "")
-    if len(nova) < 4:
-        raise ErroApi("A senha deve ter pelo menos 4 caracteres")
-    db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(nova), inteiro(eu.get("id"), "id")))
+    atual = str(p.c("atual") or "")
+    auth = AuthService(contexto.db())
+    if not auth.authenticate(eu.get("username", ""), atual):
+        raise ErroApi(auth.last_error or "Senha atual incorreta.", 400, "senha_atual")
+    gravar_senha_nova(inteiro(eu.get("id"), "id"), eu.get("username", ""), str(p.c("nova") or ""), atual)
+    contexto.definir_usuario({**eu, "trocar_senha": False})
     return {"ok": True}

@@ -4,7 +4,7 @@ import { ProvedorApp, useApp } from "./contexto";
 import type { Empresa, Usuario, View } from "./types";
 import { TitleBar } from "./components/TitleBar";
 import { ITENS_CADASTRO, ITENS_OPERACAO, Sidebar } from "./components/Sidebar";
-import { Login } from "./components/Login";
+import { Login, TrocaObrigatoria } from "./components/Login";
 import { Palette, type Comando } from "./components/Palette";
 import { InicioView } from "./views/InicioView";
 import { PedidosView } from "./views/PedidosView";
@@ -91,6 +91,16 @@ export default function App() {
       <div className="window">
         <TitleBar motor={estado} />
         <Login empresa={empresa} cozinha={saude?.cozinha ?? null} lembrado={lembrado} onEntrar={setUsuario} />
+      </div>
+    );
+  }
+
+  if (usuario.trocar_senha) {
+    return (
+      <div className="window">
+        <TitleBar motor={estado} />
+        <TrocaObrigatoria empresa={empresa} usuario={usuario} onSair={sair}
+          onTrocada={() => setUsuario({ ...usuario, trocar_senha: false })} />
       </div>
     );
   }

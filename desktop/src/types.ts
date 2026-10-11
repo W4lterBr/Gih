@@ -2,7 +2,8 @@ export type View =
   | "inicio" | "pedidos" | "producao" | "pronta" | "clientes" | "produtos" | "movimentacao" | "relatorios"
   | "cfg-empresa" | "cfg-usuarios" | "cfg-banco" | "cfg-cozinha" | "cfg-licenca" | "cfg-aparencia" | "cfg-conta";
 
-export interface Usuario { id: number; username: string; role: "admin" | "common" | string }
+/** trocar_senha: entrou com a senha padrão/fraca — o motor só libera depois da troca. */
+export interface Usuario { id: number; username: string; role: "admin" | "common" | string; trocar_senha?: boolean }
 export interface Empresa { nome: string; logo: string | null; logo_path: string | null }
 
 export interface Cliente { id: number; name: string; phone: string | null; address: string | null; observation: string | null; birthday?: string | null }

@@ -11,6 +11,7 @@ import socket
 from api import ErroApi, Pedido, contexto, rota
 from core.credenciais import clear_saved_credentials, load_saved_credentials, save_credentials
 from core.services import AuthService
+from core.senhas import problema_senha_nova, senha_fraca
 
 PORTA_COZINHA = 5000
 
@@ -65,6 +66,8 @@ def _entrar(usuario: str, senha: str) -> dict:
     if not u:
         raise ErroApi(auth.last_error or "Usuário ou senha inválidos.", 401, "login_invalido")
     publico = _usuario_publico(u)
+    # Senha padrão/fraca: a sessão fica restrita até a troca (servico_local.py barra o resto).
+    publico["trocar_senha"] = senha_fraca(u.username, senha)
     contexto.definir_usuario(publico)
     try:
         from core.logger import log_event
@@ -102,6 +105,46 @@ def login_automatico(p: Pedido) -> dict:
         return {"usuario": _entrar(*salvo), "lembrado": salvo[0]}
     except ErroApi:
         return {"usuario": None, "lembrado": salvo[0]}
+
+
+@rota("POST", "/login/trocar-senha", publica=True, escreve=False)
+def trocar_senha_no_login(p: Pedido) -> dict:
+    """Troca a senha pela tela de login (sem entrar): exige usuário e senha atual.
+    Tentativas erradas contam no bloqueio de login como um login comum."""
+    usuario = str(p.c("usuario") or "").strip()
+    atual = str(p.c("atual") or "")
+    nova = str(p.c("nova") or "")
+    if not usuario or not atual:
+        raise ErroApi("Informe usuário e senha atual.")
+    auth = AuthService(contexto.db())
+    u = auth.authenticate(usuario, atual)
+    if not u:
+        raise ErroApi(auth.last_error or "Usuário ou senha atual inválidos.", 401, "login_invalido")
+    gravar_senha_nova(u.id, u.username, nova, atual)
+    return {"ok": True}
+
+
+def gravar_senha_nova(uid: int, username: str, nova: str, atual: str) -> None:
+    from core.security import hash_password
+    erro = problema_senha_nova(username, nova, atual)
+    if erro:
+        raise ErroApi(erro, 400, "senha_invalida")
+    h = hash_password(nova)
+    if not h:
+        raise ErroApi("Não foi possível gerar a senha. Tente de novo.", 500)
+    contexto.db().execute("UPDATE users SET password_hash=? WHERE id=?", (h, uid))
+    # Credencial lembrada deste usuário passa a ser a nova (senão o login automático falharia).
+    try:
+        salvo = load_saved_credentials()
+        if salvo and salvo[0].lower() == username.lower():
+            save_credentials(salvo[0], nova)
+    except Exception:
+        pass
+    try:
+        from core.logger import log_event
+        log_event(f"🔑 Senha trocada: {username}")
+    except Exception:
+        pass
 
 
 @rota("POST", "/logout", publica=True, escreve=False)

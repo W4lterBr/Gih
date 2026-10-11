@@ -71,6 +71,7 @@ def main() -> int:
             except OSError:
                 time.sleep(0.25)
         c.ok("POST", "/login", {"usuario": "admin", "senha": "admin"})
+        c.ok("PUT", "/minha-senha", {"atual": "admin", "nova": "Doce#2026"})  # senha padrão exige troca
 
         print("Sem token")
         s = c.ok("GET", "/licenca")
@@ -83,7 +84,7 @@ def main() -> int:
         s = c.ok("POST", "/licenca/ativar", {"token": TOKEN_LIC})
         checar(s["situacao"] == "liberado", "token certo ativa")
         checar(TOKEN_LIC not in json.dumps(s), "resposta não traz o token completo")
-        uid = c.ok("POST", "/usuarios", {"username": "func9", "password": "1234", "role": "common"})["id"]
+        uid = c.ok("POST", "/usuarios", {"username": "func9", "password": "Massa#77", "role": "common"})["id"]
 
         print("Bloqueado = somente leitura")
         MODO["v"] = "bloqueado"
@@ -106,11 +107,11 @@ def main() -> int:
 
         print("Permissões")
         c.ok("POST", "/logout")
-        c.ok("POST", "/login", {"usuario": "func9", "senha": "1234"})
+        c.ok("POST", "/login", {"usuario": "func9", "senha": "Massa#77"})
         checar(c.req("POST", "/licenca/ativar", {"token": TOKEN_LIC})[0] == 403, "usuário comum não ativa licença")
         checar(c.req("GET", "/licenca")[0] == 200, "usuário comum vê a situação")
         c.ok("POST", "/logout")
-        c.ok("POST", "/login", {"usuario": "admin", "senha": "admin"})
+        c.ok("POST", "/login", {"usuario": "admin", "senha": "Doce#2026"})
 
         print("Pagou")
         MODO["v"] = "liberado"

@@ -26,6 +26,14 @@ app/
 Fora do git (locais): `data/` (banco e config.yaml em desenvolvimento), `backups/`,
 `Backup_Clientes/`, `logs/`, `build/`, `dist/`.
 
+## Primeiro acesso
+
+Num banco novo o sistema cria o usuário **admin** com a senha **admin**. No primeiro login
+com essa senha (ou com qualquer senha fácil demais: comum, curta ou igual ao usuário) o app
+obriga a definir uma senha nova antes de continuar — o motor bloqueia todo o resto até a
+troca. A senha também pode ser trocada na tela de login ("Trocar senha") e em
+Configurações → Minha conta. Senhas novas: mínimo de 6 caracteres, sem as mais comuns.
+
 ## Desenvolvimento
 
 ```powershell

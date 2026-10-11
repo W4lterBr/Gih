@@ -254,3 +254,10 @@ input[type="date"] { color-scheme: light dark; }
 .btn:disabled, .icone-btn:disabled, .etq-botao:disabled, .seg button:disabled { opacity: .45; cursor: not-allowed; }
 .linha-ctl input.mono { font-family: var(--mono); letter-spacing: .06em; width: 240px; }
 .conta-sit.neutro { color: var(--text-3); } .conta-sit.neutro i { background: var(--text-3); box-shadow: 0 0 0 3px var(--surface-2); }
+
+/* Troca de senha */
+.form-ok { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); font-size: 12.5px; }
+.login-link { justify-self: center; font-size: 12.5px; color: var(--text-2); }
+.login-link:hover { color: var(--brand); }
+.login-dica { margin: -4px 0 0; font-size: 11.5px; color: var(--text-3); }
+.login-card h1 + .login-sub b { color: var(--text); }

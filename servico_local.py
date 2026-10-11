@@ -54,7 +54,10 @@ from core import licenca  # noqa: E402
 
 TOKEN = os.environ.get("CONFEITARIA_TOKEN", "")
 ORIGENS_PERMITIDAS = {"http://tauri.localhost", "tauri://localhost", "http://localhost:1420"}
-LIMITE_CORPO = 25 * 1024 * 1024  # logo da empresa e restauração de backup vêm em base64
+LIMITE_CORPO = 25 * 1024 * 1024
+# Com a senha padrão, a sessão só alcança estas rotas até trocar a senha.
+ROTAS_TROCA_SENHA = {"/saude", "/empresa", "/avisos", "/logout", "/minha-senha", "/login",
+                     "/login/automatico", "/login/trocar-senha"}  # logo da empresa e restauração de backup vêm em base64
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -112,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
                 usuario = contexto.usuario
                 if not rota.publica and usuario is None:
                     raise ErroApi("Faça login para continuar.", 401, "sem_login")
+                if (usuario or {}).get("trocar_senha") and url.path not in ROTAS_TROCA_SENHA:
+                    raise ErroApi("Defina uma nova senha para continuar.", 403, "trocar_senha")
                 if rota.admin and (usuario or {}).get("role") != "admin":
                     raise ErroApi("Apenas administradores podem fazer isso.", 403)
                 if rota.escreve and licenca.somente_leitura():

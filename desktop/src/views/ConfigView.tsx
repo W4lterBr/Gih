@@ -95,7 +95,7 @@ function UsuarioDialog({ u, onClose, onSalvo }: { u: Usuario | null; onClose: ()
       rodape={<><button type="button" className="btn" onClick={onClose}>Cancelar</button><button className="btn primary">Salvar</button></>}>
       <div className="form-grid">
         <Campo rotulo="Nome de usuário" largura="1 / -1"><input autoFocus value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} /></Campo>
-        <Campo rotulo={u ? "Nova senha" : "Senha"} dica={u ? "Deixe em branco para manter a atual." : "Mínimo de 4 caracteres."}>
+        <Campo rotulo={u ? "Nova senha" : "Senha"} dica={u ? "Deixe em branco para manter a atual." : "Mínimo de 6 caracteres; evite 123456, admin ou o nome do usuário."}>
           <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" />
         </Campo>
         <Campo rotulo="Confirmar senha"><input type="password" value={f.confirmar} onChange={(e) => setF({ ...f, confirmar: e.target.value })} autoComplete="new-password" /></Campo>
@@ -352,7 +352,7 @@ function Conta() {
           <label>Nova senha<input type="password" value={f.nova} onChange={(e) => setF({ ...f, nova: e.target.value })} autoComplete="new-password" /></label>
           <label>Confirmar<input type="password" value={f.confirmar} onChange={(e) => setF({ ...f, confirmar: e.target.value })} autoComplete="new-password" /></label>
         </div>
-        <div><button className="btn primary" disabled={!f.atual || f.nova.length < 4}>Salvar senha</button></div>
+        <div><button className="btn primary" disabled={!f.atual || f.nova.length < 6}>Salvar senha</button></div>
       </form>
     </div>
   );

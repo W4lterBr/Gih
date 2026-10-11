@@ -97,7 +97,24 @@ def main() -> int:
         except urllib.error.HTTPError as e:
             st_ruim = e.code
         checar(st_ruim == 400, "JSON inválido responde 400 (não erro interno)")
-        c.ok("POST", "/login", {"usuario": "admin", "senha": "admin"})
+        login = c.ok("POST", "/login", {"usuario": "admin", "senha": "admin"})
+
+        print("Senha padrão")
+        checar(login["usuario"]["trocar_senha"] is True, "admin/admin obriga a trocar a senha")
+        st, js = c.req("GET", "/clientes")
+        checar(st == 403 and js.get("codigo") == "trocar_senha", "com a senha padrão o resto fica bloqueado")
+        checar(c.req("PUT", "/minha-senha", {"atual": "admin", "nova": "123456"})[0] == 400, "senha nova comum é recusada")
+        checar(c.req("PUT", "/minha-senha", {"atual": "admin", "nova": "abc"})[0] == 400, "senha nova curta é recusada")
+        checar(c.req("PUT", "/minha-senha", {"atual": "errada", "nova": "Doce#2026"})[0] == 400, "senha atual errada é recusada")
+        c.ok("PUT", "/minha-senha", {"atual": "admin", "nova": "Doce#2026"})
+        checar(c.req("GET", "/clientes")[0] == 200, "depois de trocar, libera")
+        c.ok("POST", "/logout")
+        checar(c.req("POST", "/login", {"usuario": "admin", "senha": "admin"})[0] == 401, "senha antiga não entra mais")
+        checar(c.req("POST", "/login/trocar-senha", {"usuario": "admin", "atual": "Doce#2026", "nova": "Doce#2026"})[0] == 400, "troca no login exige senha diferente")
+        c.ok("POST", "/login/trocar-senha", {"usuario": "admin", "atual": "Doce#2026", "nova": "Bolo!2026"})
+        checar(c.req("POST", "/login/trocar-senha", {"usuario": "admin", "atual": "Doce#2026", "nova": "Outra!2026"})[0] == 401, "troca no login confere a senha atual")
+        login = c.ok("POST", "/login", {"usuario": "admin", "senha": "Bolo!2026"})
+        checar(login["usuario"]["trocar_senha"] is False, "senha forte não pede troca")
 
         print("Clientes")
         cid = c.ok("POST", "/clientes", {"name": "  Cliente Teste  ", "phone": "", "address": "Rua X"})["id"]
@@ -209,8 +226,9 @@ def main() -> int:
                 checar(os.path.getsize(arq) > 0, f"relatório de pedidos .{fmt}")
 
         print("Usuários")
-        uid = c.ok("POST", "/usuarios", {"username": "func1", "password": "1234", "role": "common"})["id"]
-        checar(c.req("POST", "/usuarios", {"username": "FUNC1", "password": "1234"})[0] == 400, "usuário duplicado")
+        checar(c.req("POST", "/usuarios", {"username": "func1", "password": "1234", "role": "common"})[0] == 400, "usuário novo com senha fraca é recusado")
+        uid = c.ok("POST", "/usuarios", {"username": "func1", "password": "Massa#77", "role": "common"})["id"]
+        checar(c.req("POST", "/usuarios", {"username": "FUNC1", "password": "Massa#77"})[0] == 400, "usuário duplicado")
         me = c.ok("GET", "/saude")["usuario"]
         checar(c.req("DELETE", f"/usuarios/{me['id']}")[0] == 400, "não exclui a si mesmo")
         c.ok("DELETE", f"/usuarios/{uid}")
