@@ -996,13 +996,8 @@
             
             // Separa por vírgula, adiciona 'cm' a cada valor e junta novamente
             const sizes = sizeStr.split(',').map(s => s.trim()).filter(s => s);
-            const formatted = sizes.map(s => {
-                // Adiciona 'cm' apenas se já não tiver
-                if (s.endsWith(' cm') || s.endsWith('cm')) {
-                    return s;
-                }
-                return `${s} cm`;
-            });
+            // Adiciona 'cm' apenas a valores numéricos ("30" -> "30 cm", "Grande (3kg)" fica igual)
+            const formatted = sizes.map(s => /^\d+([.,]\d+)?$/.test(s) ? `${s} cm` : s);
             return formatted.join(', ');
         }
 

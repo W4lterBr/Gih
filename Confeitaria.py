@@ -840,20 +840,21 @@ def money(v: float) -> str:
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def format_size(size_str: Optional[str]) -> str:
-    """Formata tamanho(s) adicionando 'cm' após cada valor.
-    
+    """Formata tamanho(s) adicionando 'cm' após cada valor numérico.
+
     Exemplos:
         "30" -> "30 cm"
         "15, 20, 25" -> "15 cm, 20 cm, 25 cm"
+        "Grande (3kg)" -> "Grande (3kg)"
         "" -> ""
         None -> ""
     """
     if not size_str:
         return ""
-    
-    # Separa por vírgula, adiciona 'cm' a cada valor e junta novamente
+
+    # Separa por vírgula, adiciona 'cm' apenas a valores numéricos e junta novamente
     sizes = [s.strip() for s in size_str.split(",") if s.strip()]
-    formatted = [f"{s} cm" if not s.endswith(" cm") and not s.endswith("cm") else s for s in sizes]
+    formatted = [f"{s} cm" if s.replace(".", "", 1).isdigit() else s for s in sizes]
     return ", ".join(formatted)
 
 def format_date(date_str: str) -> str:
@@ -8596,7 +8597,8 @@ class OrdersPage(BasePage):
         self.btn_edit: QPushButton = QPushButton("Editar")
         self.btn_del: QPushButton = QPushButton("Excluir")
         self.btn_label: QPushButton = QPushButton("Etiqueta")
-        actions.addWidget(self.btn_add); actions.addWidget(self.btn_edit); actions.addWidget(self.btn_del); actions.addWidget(self.btn_label); actions.addStretch(1)
+        self.btn_report: QPushButton = QPushButton("Relatório")
+        actions.addWidget(self.btn_add); actions.addWidget(self.btn_edit); actions.addWidget(self.btn_del); actions.addWidget(self.btn_label); actions.addWidget(self.btn_report); actions.addStretch(1)
         bl.addLayout(actions)
 
         # Filtros de data
@@ -8646,7 +8648,12 @@ class OrdersPage(BasePage):
                     """)
         except Exception:
             pass
-        self.date_start.dateChanged.connect(lambda: self.refresh())
+        # Debounce: navegar no calendário dispara vários dateChanged; atualiza só uma vez após 300ms
+        self._date_refresh_timer = QTimer(self)
+        self._date_refresh_timer.setSingleShot(True)
+        self._date_refresh_timer.setInterval(300)
+        cast(Any, self._date_refresh_timer.timeout).connect(self.refresh)
+        self.date_start.dateChanged.connect(lambda: self._date_refresh_timer.start())
         filters_box.addWidget(self.date_start)
         
         # Data final
@@ -8692,7 +8699,7 @@ class OrdersPage(BasePage):
                     """)
         except Exception:
             pass
-        self.date_end.dateChanged.connect(lambda: self.refresh())
+        self.date_end.dateChanged.connect(lambda: self._date_refresh_timer.start())
         filters_box.addWidget(self.date_end)
         
         # Botão para hoje
@@ -8755,6 +8762,7 @@ class OrdersPage(BasePage):
         cast(Any, self.btn_edit.clicked).connect(self.edit)
         cast(Any, self.btn_del.clicked).connect(self.delete)
         cast(Any, self.btn_label.clicked).connect(self.open_label_manager)
+        cast(Any, self.btn_report.clicked).connect(self.generate_report)
 
         self.refresh()
         # se usuário não for admin, esconde a coluna de Logs
@@ -8822,6 +8830,8 @@ class OrdersPage(BasePage):
         """
         
         rows = self.db.query(base_query, tuple(params))
+        # Pausa o redesenho durante o preenchimento (evita travar com muitos pedidos)
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
         for r in rows:
             row = self.table.rowCount(); self.table.insertRow(row)
@@ -8877,6 +8887,7 @@ class OrdersPage(BasePage):
             self.table.setCellWidget(row, 8, container)
             # Força altura mínima de 48px para garantir que ícones não sejam cortados
             self.table.setRowHeight(row, 48)
+        self.table.setUpdatesEnabled(True)
         self.table.resizeColumnsToContents()
         # Reaplica largura fixa da coluna de Logs após autoajuste
         try:
@@ -9396,6 +9407,263 @@ class OrdersPage(BasePage):
                         self.toast_cb(f"{deleted_count} pedidos excluídos")
             except Exception as e:
                 show_message(self, "Erro ao excluir", str(e), ("OK",))
+
+    # ------------------------------------------------------------------
+    # Relatório de pedidos (PDF / Excel)
+    # ------------------------------------------------------------------
+    ALL_CUSTOMERS = "Todos os Clientes"
+    ALL_LABELS = "Todas as Etiquetas"
+
+    def _company_info(self) -> tuple[str, Optional[str]]:
+        """Retorna (nome, caminho do logo) da empresa cadastrada, com fallback para o logo padrão."""
+        name, logo = "Confeitaria", None
+        try:
+            rows = self.db.query("SELECT name, logo_path FROM company WHERE id=1")
+            if rows:
+                name = rows[0]["name"] or name
+                logo = rows[0]["logo_path"]
+        except Exception:
+            pass
+        if not logo or not os.path.exists(logo):
+            logo = next((p for p in (
+                os.path.join(APP_DIR, "assets", "icons", "logo.png"),
+                os.path.join(APP_DIR, "web", "logo.png"),
+            ) if os.path.exists(p)), None)
+        return name, logo
+
+    def generate_report(self) -> None:
+        """Gera relatório em PDF ou Excel dos pedidos do período, filtrados por cliente e etiqueta."""
+        customers = self.db.query("""
+            SELECT DISTINCT c.name FROM orders o
+            JOIN customers c ON c.id = o.customer_id
+            WHERE c.name IS NOT NULL AND c.name != ''
+            ORDER BY c.name
+        """)
+        labels = self.db.query("SELECT DISTINCT name FROM labels WHERE name IS NOT NULL AND name != '' ORDER BY name")
+        label_names = [self.ALL_LABELS, "Comum"] + [l["name"] for l in labels if l["name"] != "Comum"]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Gerar Relatório")
+        form = QFormLayout(dlg)
+        cb_customer = QComboBox(); cb_customer.addItems([self.ALL_CUSTOMERS] + [c["name"] for c in customers])
+        cb_label = QComboBox(); cb_label.addItems(label_names)
+        cb_format = QComboBox(); cb_format.addItems(["PDF", "Excel"])
+        period = f"{self.date_start.date().toString('dd/MM/yyyy')} a {self.date_end.date().toString('dd/MM/yyyy')}"
+        form.addRow("Período:", QLabel(period))
+        form.addRow("Cliente:", cb_customer)
+        form.addRow("Etiqueta:", cb_label)
+        form.addRow("Formato:", cb_format)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        cast(Any, buttons.accepted).connect(dlg.accept)
+        cast(Any, buttons.rejected).connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        customer = cb_customer.currentText()
+        label = cb_label.currentText()
+        report_format = cb_format.currentText()
+        date_start = self.date_start.date().toString("yyyy-MM-dd")
+        date_end = self.date_end.date().toString("yyyy-MM-dd")
+
+        query = """
+            SELECT c.name AS cliente, p.name AS produto, p.size AS produto_size,
+                   o.quantity, o.delivery_date, o.status,
+                   COALESCE(o.label, 'Comum') AS label, o.notes
+            FROM orders o
+            JOIN customers c ON c.id = o.customer_id
+            JOIN products p ON p.id = o.product_id
+            WHERE DATE(o.delivery_date) BETWEEN ? AND ?
+        """
+        params: list[Any] = [date_start, date_end]
+        if customer != self.ALL_CUSTOMERS:
+            query += " AND c.name = ?"
+            params.append(customer)
+        if label == "Comum":
+            query += " AND (o.label IS NULL OR o.label = 'Comum')"
+        elif label != self.ALL_LABELS:
+            query += " AND o.label = ?"
+            params.append(label)
+        query += " ORDER BY o.delivery_date ASC, o.created_at ASC"
+
+        rows = self.db.query(query, tuple(params))
+        if not rows:
+            show_message(self, "Aviso", "Nenhum pedido encontrado com os filtros selecionados.", ("OK",))
+            return
+
+        default_dir = os.path.join(os.path.expanduser("~"), "Documents")
+        if not os.path.isdir(default_dir):
+            default_dir = os.path.expanduser("~")
+        customer_suffix = customer.replace(" ", "_") if customer != self.ALL_CUSTOMERS else "Todos"
+        ext, file_filter = (".pdf", "PDF (*.pdf)") if report_format == "PDF" else (".xlsx", "Excel (*.xlsx)")
+        default_name = os.path.join(default_dir, f"relatorio_{customer_suffix}_{label.replace(' ', '_')}_{date_start}_{date_end}{ext}")
+        filepath, _ = QFileDialog.getSaveFileName(self, f"Salvar Relatório {report_format}", default_name, file_filter)
+        if not filepath:
+            return
+
+        subtitle = f"Período: {format_date(date_start)} a {format_date(date_end)}"
+        if customer != self.ALL_CUSTOMERS:
+            subtitle += f" | Cliente: {customer}"
+        if label != self.ALL_LABELS:
+            subtitle += f" | Etiqueta: {label}"
+
+        try:
+            if report_format == "PDF":
+                self._generate_pdf_report(filepath, rows, subtitle)
+            else:
+                self._generate_excel_report(filepath, rows, subtitle)
+        except ImportError as e:
+            show_message(self, "Erro", f"Biblioteca necessária não instalada: {e.name}", ("OK",))
+            return
+        except Exception as e:
+            show_message(self, "Erro", f"Erro ao gerar relatório {report_format}:\n{e}", ("OK",))
+            return
+
+        if self.toast_cb:
+            self.toast_cb(f"Relatório {report_format} gerado: {os.path.basename(filepath)}")
+        if show_message(self, "Sucesso", f"Relatório {report_format} gerado com sucesso!\n\nDeseja abrir o arquivo?", ("Não", "Sim"), default=1) == 1:
+            try:
+                os.startfile(filepath)  # type: ignore[attr-defined]
+            except Exception:
+                import subprocess
+                subprocess.call(["open" if sys.platform == "darwin" else "xdg-open", filepath])
+
+    REPORT_HEADERS = ["#", "Cliente", "Produto", "Tamanho", "Qtd", "Entrega", "Status", "Etiqueta", "Observações"]
+
+    def _report_row(self, idx: int, r: Any) -> list[Any]:
+        return [idx, str(r["cliente"]), str(r["produto"]), format_size(r["produto_size"]),
+                int(r["quantity"]), format_date(str(r["delivery_date"])), str(r["status"]),
+                str(r["label"] or "Comum"), str(r["notes"] or "")]
+
+    def _generate_pdf_report(self, filepath: str, rows: list, subtitle: str) -> None:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from xml.sax.saxutils import escape
+
+        company_name, logo = self._company_info()
+        doc = SimpleDocTemplate(filepath, pagesize=landscape(A4), topMargin=1.5*cm, bottomMargin=1.5*cm,
+                                leftMargin=2*cm, rightMargin=2*cm, title="Relatório de Pedidos")
+        elements: list[Any] = []
+        if logo:
+            try:
+                img = Image(logo, width=3*cm, height=3*cm, kind="proportional")
+                img.hAlign = "LEFT"
+                elements += [img, Spacer(1, 0.3*cm)]
+            except Exception:
+                pass
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle("T", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#1f2937"), alignment=TA_CENTER, spaceAfter=6)
+        sub_style = ParagraphStyle("S", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#6b7280"), alignment=TA_CENTER, spaceAfter=20)
+        cell_style = ParagraphStyle("C", parent=styles["Normal"], fontSize=9, leading=11, textColor=colors.HexColor("#374151"))
+        total_style = ParagraphStyle("Tot", parent=styles["Normal"], fontSize=10, fontName="Helvetica-Bold", textColor=colors.HexColor("#1f2937"))
+        footer_style = ParagraphStyle("F", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#9ca3af"), alignment=TA_CENTER)
+
+        elements.append(Paragraph(escape(company_name), title_style))
+        elements.append(Paragraph("Relatório de Pedidos", sub_style))
+        elements.append(Paragraph(escape(subtitle), sub_style))
+
+        data: list[list[Any]] = [self.REPORT_HEADERS]
+        total_qty = 0
+        for idx, r in enumerate(rows, 1):
+            row = self._report_row(idx, r)
+            total_qty += row[4]
+            data.append([Paragraph(escape(str(v)), cell_style) for v in row])
+        data.append([""] * 3 + [Paragraph("TOTAL:", total_style), Paragraph(str(total_qty), total_style)] + [""] * 4)
+
+        table = Table(data, colWidths=[1.2*cm, 3.5*cm, 3.5*cm, 2*cm, 1.2*cm, 2.2*cm, 3*cm, 2.5*cm, 4*cm], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("GRID", (0, 0), (-1, -2), 0.5, colors.HexColor("#e5e7eb")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f9fafb")]),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f3f4f6")),
+            ("BOX", (0, -1), (-1, -1), 1, colors.HexColor("#1f2937")),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 1*cm))
+        elements.append(Paragraph(f"Relatório gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", footer_style))
+        doc.build(elements)
+
+    def _generate_excel_report(self, filepath: str, rows: list, subtitle: str) -> None:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.drawing.image import Image as XLImage
+
+        company_name, logo = self._company_info()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Relatório de Pedidos"
+
+        first_row = 1
+        if logo:
+            try:
+                img = XLImage(logo)
+                ratio = 100 / max(img.width, img.height)
+                img.width, img.height = int(img.width * ratio), int(img.height * ratio)
+                ws.add_image(img, "A1")
+                first_row = 6
+            except Exception:
+                pass
+
+        for offset, (text, font) in enumerate([
+            (company_name, Font(size=18, bold=True, color="1f2937")),
+            ("Relatório de Pedidos", Font(size=13, bold=True, color="374151")),
+            (subtitle, Font(size=11, color="6b7280")),
+        ]):
+            r = first_row + offset
+            ws.cell(row=r, column=1, value=text).font = font
+            ws.cell(row=r, column=1).alignment = Alignment(horizontal="center")
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=9)
+
+        thin = Side(style="thin", color="e5e7eb")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        header_row = first_row + 4
+        for col, header in enumerate(self.REPORT_HEADERS, start=1):
+            cell = ws.cell(row=header_row, column=col, value=header)
+            cell.fill = PatternFill("solid", start_color="1f2937")
+            cell.font = Font(bold=True, color="FFFFFF", size=11)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+
+        fills = [PatternFill("solid", start_color="FFFFFF"), PatternFill("solid", start_color="f9fafb")]
+        total_qty = 0
+        row_num = header_row
+        for idx, r in enumerate(rows, 1):
+            row_num += 1
+            values = self._report_row(idx, r)
+            total_qty += values[4]
+            for col, value in enumerate(values, start=1):
+                cell = ws.cell(row=row_num, column=col, value=value)
+                cell.border = border
+                cell.fill = fills[(idx + 1) % 2]
+                cell.alignment = Alignment(horizontal="center", vertical="center") if col in (1, 5, 6) \
+                    else Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+        row_num += 1
+        bold = Side(style="medium", color="1f2937")
+        for col in range(1, 10):
+            cell = ws.cell(row=row_num, column=col)
+            cell.fill = PatternFill("solid", start_color="f3f4f6")
+            cell.border = Border(left=bold, right=bold, top=bold, bottom=bold)
+            cell.font = Font(bold=True, size=11, color="1f2937")
+            cell.alignment = Alignment(horizontal="center")
+        ws.cell(row=row_num, column=4, value="TOTAL:")
+        ws.cell(row=row_num, column=5, value=total_qty)
+
+        for letter, width in zip("ABCDEFGHI", (8, 25, 25, 12, 8, 15, 20, 15, 35)):
+            ws.column_dimensions[letter].width = width
+        ws.cell(row=row_num + 2, column=1, value=f"Relatório gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}").font = Font(size=9, italic=True, color="9ca3af")
+        wb.save(filepath)
 
     def _set_today_filter(self) -> None:
         """Define o filtro para a data de hoje"""
