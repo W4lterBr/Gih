@@ -121,7 +121,7 @@ powershell -ExecutionPolicy Bypass -File scripts\gerar-instalador.ps1           
 powershell -ExecutionPolicy Bypass -File scripts\gerar-instalador.ps1 -PularMotor # só o app
 ```
 
-Saída em `Output\` (instalador NSIS por usuário, sem admin). O motor vem de `../motor.spec`
+Saída em `..\output\` (instalador NSIS por usuário, sem admin). O motor vem de `../motor.spec`
 (PyInstaller) e é copiado para `src-tauri\motor\` (fora do git). Sem atualizador automático:
 cada versão nova é um instalador novo.
 

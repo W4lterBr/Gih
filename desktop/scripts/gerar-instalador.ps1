@@ -7,7 +7,7 @@
 #   1. Empacota o motor (motor.spec na raiz do projeto -> dist\confeitaria-motor)
 #   2. Copia para src-tauri\motor (vira recurso do instalador; fora do git)
 #   3. tauri build -> src-tauri\target\release\bundle\nsis\*.exe
-#   4. Copia o instalador para desktop\Output
+#   4. Copia o instalador para output\ na raiz do projeto (app\output, fora do git)
 #
 # Sem atualizador automático (decisão da Confeitaria): cada versão nova é um instalador.
 param(
@@ -46,8 +46,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "tauri build falhou ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
-Write-Host "[4/4] Copiando para desktop\Output..." -ForegroundColor Cyan
-$saida = Join-Path $raiz "Output"
+Write-Host "[4/4] Copiando para output\ (raiz do projeto)..." -ForegroundColor Cyan
+$saida = Join-Path $Projeto "output"
 New-Item -ItemType Directory -Force $saida | Out-Null
 Copy-Item (Join-Path $raiz "src-tauri\target\release\bundle\nsis\*.exe") $saida -Force
 Get-ChildItem $saida | Format-Table Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}

@@ -55,7 +55,7 @@ cd desktop
 powershell -ExecutionPolicy Bypass -File scripts\gerar-instalador.ps1
 ```
 
-Gera `desktop\Output\Confeitaria_<versão>_x64-setup.exe` (por usuário, sem admin). Não há
+Gera `output\Confeitaria_<versão>_x64-setup.exe` (por usuário, sem admin). Não há
 atualizador automático: cada versão nova é um instalador novo. Instalado, o app usa a mesma
 pasta de dados da versão 1.x (`%LOCALAPPDATA%\Confeitaria`), então atualizar não perde dados.
 
