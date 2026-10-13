@@ -74,7 +74,9 @@ export function EtiquetasDialog({ onClose }: { onClose: () => void }) {
               <Chip nome={e.name} cor={e.color} />
               <span className="grow" />
               <button type="button" className="icone-btn" onClick={() => { setEditando({ ...e }); setErro(""); }} aria-label="Editar"><Icone nome="editar" tam={14} /></button>
-              <button type="button" className="icone-btn perigo" onClick={() => excluir(e)} aria-label="Excluir"><Icone nome="lixo" tam={14} /></button>
+              {e.name.toLowerCase() === "comum"
+                ? <span className="sutil" title="Etiqueta padrão dos pedidos">padrão</span>
+                : <button type="button" className="icone-btn perigo" onClick={() => excluir(e)} aria-label="Excluir"><Icone nome="lixo" tam={14} /></button>}
             </div>
           )
         ))}
@@ -98,7 +100,7 @@ export function EtiquetasDialog({ onClose }: { onClose: () => void }) {
 
 export function RelatorioPedidosDialog({ de, ate, onClose }: { de: string; ate: string; onClose: () => void }) {
   const { toast } = useApp();
-  const [opcoes, setOpcoes] = useState<{ clientes: string[]; etiquetas: string[] } | null>(null);
+  const [opcoes, setOpcoes] = useState<{ clientes: { id: number; nome: string; telefone: string | null }[]; etiquetas: string[] } | null>(null);
   const [inicio, setInicio] = useState(de || isoLocal());
   const [fim, setFim] = useState(ate || isoLocal());
   const [cliente, setCliente] = useState("");
@@ -107,16 +109,18 @@ export function RelatorioPedidosDialog({ de, ate, onClose }: { de: string; ate: 
   const [gerando, setGerando] = useState(false);
   const [erro, setErro] = useState("");
 
-  useEffect(() => { api.get<{ clientes: string[]; etiquetas: string[] }>("/pedidos/relatorio/opcoes").then(setOpcoes).catch(() => {}); }, []);
+  useEffect(() => { api.get<NonNullable<typeof opcoes>>("/pedidos/relatorio/opcoes").then(setOpcoes).catch(() => {}); }, []);
+  const nomeCliente = opcoes?.clientes.find((c) => String(c.id) === cliente)?.nome ?? "";
+  const homonimo = (nome: string) => (opcoes?.clientes.filter((c) => c.nome === nome).length ?? 0) > 1;
 
   const gerar = async () => {
-    const nome = `relatorio_${(cliente || "Todos").replace(/\s+/g, "_")}_${(etiqueta || "Todas_as_Etiquetas").replace(/\s+/g, "_")}_${inicio}_${fim}.${formato}`;
+    const nome = `relatorio_${(nomeCliente || "Todos").replace(/\s+/g, "_")}_${(etiqueta || "Todas_as_Etiquetas").replace(/\s+/g, "_")}_${inicio}_${fim}.${formato}`;
     const caminho = await escolherSalvar(nome, [formato === "pdf" ? { name: "PDF", extensions: ["pdf"] } : { name: "Excel", extensions: ["xlsx"] }]);
     if (!caminho) return;
     setGerando(true);
     setErro("");
     try {
-      const r = await api.post<{ caminho: string; linhas: number }>("/pedidos/relatorio", { de: inicio, ate: fim, cliente, etiqueta, formato, caminho });
+      const r = await api.post<{ caminho: string; linhas: number }>("/pedidos/relatorio", { de: inicio, ate: fim, cliente_id: cliente ? Number(cliente) : null, etiqueta, formato, caminho });
       toast(`Relatório gerado (${r.linhas} pedidos).`);
       abrirArquivo(r.caminho).catch(() => {});
       onClose();
@@ -136,7 +140,7 @@ export function RelatorioPedidosDialog({ de, ate, onClose }: { de: string; ate: 
         <Campo rotulo="Cliente" largura="1 / -1">
           <select value={cliente} onChange={(e) => setCliente(e.target.value)}>
             <option value="">Todos os clientes</option>
-            {opcoes?.clientes.map((c) => <option key={c}>{c}</option>)}
+            {opcoes?.clientes.map((c) => <option key={c.id} value={c.id}>{c.nome}{homonimo(c.nome) ? ` · ${c.telefone || `cadastro #${c.id}`}` : ""}</option>)}
           </select>
         </Campo>
         <Campo rotulo="Etiqueta">

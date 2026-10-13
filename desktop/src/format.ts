@@ -3,6 +3,16 @@ const inteiro = new Intl.NumberFormat("pt-BR");
 
 export const fmtBRL = (v: number) => brl.format(v || 0);
 export const fmtInt = (v: number) => inteiro.format(v || 0);
+const decimal = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 });
+
+/** Quantidade na unidade do produto: kg -> "1,5 kg"; un -> "3" (ou "3 un" com `sufixoUn`). */
+export function fmtQtd(v: number, unidade?: string | null, sufixoUn = false) {
+  if (unidade === "kg") return `${decimal.format(v || 0)} kg`;
+  return sufixoUn ? `${inteiro.format(v || 0)} un` : inteiro.format(v || 0);
+}
+
+/** "1,5" ou "1.5" -> 1.5 (campos de quantidade em kg aceitam vírgula). */
+export const lerQtd = (texto: string) => Number(String(texto).replace(",", "."));
 
 /** "2026-09-24" ou "2026-09-24 10:22[:00]" -> "24/09/2026" */
 export function fmtData(iso: string | null | undefined) {
@@ -85,3 +95,40 @@ export const corDe = (texto: string) => {
   for (const c of texto) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return CORES[h % CORES.length];
 };
+
+// ---------------------------------------------------------------- custos
+// O motor manda os custos como texto decimal exato; Number só para exibir.
+
+const num = (v: string | number | null | undefined) => (v === null || v === undefined || v === "" ? NaN : Number(v));
+
+/** R$ com casas extras quando o valor é pequeno: R$ 4,99 · R$ 0,0632 · R$ 0,000823. */
+export function fmtCusto(v: string | number | null | undefined, max = 4) {
+  const n = num(v);
+  if (!Number.isFinite(n)) return "—";
+  const a = Math.abs(n);
+  const casas = a >= 100 || a === 0 ? 2 : a >= 0.01 ? max : Math.max(max, 6);
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: casas }).format(n);
+}
+
+/** Número pt-BR com até `max` casas: "1,5", "0,825". */
+export function fmtNum(v: string | number | null | undefined, max = 3) {
+  const n = num(v);
+  return Number.isFinite(n) ? new Intl.NumberFormat("pt-BR", { maximumFractionDigits: max }).format(n) : "—";
+}
+
+/** Percentual: "32,5%". */
+export const fmtPct = (v: string | number | null | undefined, max = 1) => (Number.isFinite(num(v)) ? `${fmtNum(v, max)}%` : "—");
+
+/** Texto decimal do motor ("1.125") -> campo de edição ("1,125"). */
+export const paraCampo = (v: string | number | null | undefined) => (v === null || v === undefined ? "" : String(v).replace(".", ","));
+
+export const NOME_UNIDADE: Record<string, string> = { mg: "mg", g: "g", kg: "kg", ml: "ml", l: "L", un: "un", dz: "dúzia" };
+
+/** Custo por unidade-base (g/ml/un) mostrado na unidade de compra usual: por kg, por L ou por un. */
+export function custoPorMedida(precoBase: string | null | undefined, base: string) {
+  const n = num(precoBase);
+  if (!Number.isFinite(n)) return { valor: "—", por: "" };
+  if (base === "g") return { valor: fmtCusto(n * 1000), por: "/kg" };
+  if (base === "ml") return { valor: fmtCusto(n * 1000), por: "/L" };
+  return { valor: fmtCusto(n), por: "/un" };
+}

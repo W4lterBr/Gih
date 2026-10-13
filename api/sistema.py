@@ -75,7 +75,7 @@ def _entrar(usuario: str, senha: str) -> dict:
         log_event(f"✅ Login: {u.username} (Perfil: {u.role}) [interface desktop]")
     except Exception:
         pass
-    return publico
+    return contexto.usuario  # com as telas do perfil
 
 
 @rota("POST", "/login", publica=True, escreve=False)
@@ -134,6 +134,8 @@ def gravar_senha_nova(uid: int, username: str, nova: str, atual: str) -> None:
     if not h:
         raise ErroApi("Não foi possível gerar a senha. Tente de novo.", 500)
     contexto.db().execute("UPDATE users SET password_hash=? WHERE id=?", (h, uid))
+    from core.extended_database import encerrar_sessoes_web
+    encerrar_sessoes_web(contexto.db(), uid)  # o painel web pede login com a senha nova
     # Credencial lembrada deste usuário passa a ser a nova (senão o login automático falharia).
     try:
         salvo = load_saved_credentials()

@@ -4,7 +4,9 @@ Servidor Web Flask para Painel da Cozinha
 Permite acesso via rede local para atualização de estoque de produtos
 """
 
-from flask import Flask, jsonify, request, send_from_directory, g
+from flask import Flask, jsonify, redirect, request, send_from_directory, g
+import hashlib
+import secrets
 import sqlite3
 import os
 import logging
@@ -14,14 +16,68 @@ from datetime import datetime
 from pathlib import Path
 import socket
 
-# PIN errado repetido (força bruta pela rede): depois de MAX_FALHAS_PIN tentativas
-# erradas o aparelho fica BLOQUEIO_PIN_S segundos sem conseguir tentar de novo.
+# Senha errada repetida (força bruta pela rede): depois de MAX_FALHAS_PIN tentativas
+# erradas o aparelho fica BLOQUEIO_PIN_S segundos sem conseguir tentar de novo (além do
+# bloqueio por usuário do AuthService, o mesmo do sistema).
 MAX_FALHAS_PIN = 8
 BLOQUEIO_PIN_S = 300
+
+COOKIE_SESSAO = 'painel_sessao'
+DURACAO_LEMBRAR_S = 30 * 24 * 3600  # "manter conectado": 30 dias, renovados a cada uso
+DURACAO_SESSAO_S = 12 * 3600         # sem marcar: até fechar o navegador (no máximo 12 h)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def _entra_no_painel(papel) -> bool:
+    """Administrador e cozinha (e o perfil antigo); recepção não usa o painel."""
+    try:
+        from api.permissoes import entra_no_painel
+        return entra_no_painel(papel)
+    except ImportError:  # painel usado sem o motor
+        return papel != 'recepcao'
+
+
+class _BancoPainel:
+    """Adaptador mínimo para o AuthService usar a conexão do painel."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def query(self, sql, params=()):
+        return self.conn.execute(sql, params).fetchall()
+
+    def execute(self, sql, params=()):
+        cur = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cur
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _unidade(cursor, product_id) -> str:
+    cursor.execute("SELECT unit FROM products WHERE id = ?", (product_id,))
+    r = cursor.fetchone()
+    return (r[0] or "un") if r else "un"
+
+
+def _qtd(valor, unidade: str, minimo: float):
+    """Quantidade conforme a unidade: "un" inteiro; "kg" até 3 casas (aceita vírgula).
+    ValueError vira 400 nas rotas."""
+    if unidade == "kg":
+        n = round(float(str(valor).replace(",", ".")), 3)
+    else:
+        f = float(str(valor).replace(",", "."))
+        if f != int(f):
+            raise ValueError("Este produto é vendido por unidade: use um número inteiro.")
+        n = int(f)
+    if n < minimo:
+        raise ValueError("Quantidade inválida.")
+    return int(n) if n == int(n) else n
 
 
 class WebServer:
@@ -35,8 +91,8 @@ class WebServer:
             db_path: Caminho para o banco de dados SQLite
             web_dir: Diretório contendo os arquivos web (HTML, CSS, JS)
             port: Porta para o servidor (padrão: 5000)
-            access_token: PIN exigido em toda chamada à API (/api/*). Se None,
-                a API fica sem autenticação - só use assim em ambiente confiável.
+            access_token: não é mais usado (era o PIN das versões anteriores); o painel
+                agora exige login com usuário e senha (ver _setup_auth).
         """
         self.db_path = db_path
         self.web_dir = web_dir
@@ -74,9 +130,10 @@ class WebServer:
     def _setup_db_teardown(self):
         @self.app.teardown_request
         def close_db_connection(exception=None):
-            conn = g.pop('db_conn', None)
-            if conn is not None:
-                conn.close()
+            for nome in ('db_conn', 'auth_conn'):
+                conn = g.pop(nome, None)
+                if conn is not None:
+                    conn.close()
 
     def _registrar_movimento(self, cursor, product_id, delta, category, reason, order_id=None):
         """Toda mudança de estoque feita pelo painel vira movimentação (aparece na tela
@@ -87,48 +144,172 @@ class WebServer:
         cursor.execute(
             "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) "
             "VALUES (?,?,?,?,?,?,?,?)",
-            (product_id, 'entrada' if delta > 0 else 'saida', category, abs(delta), reason, order_id, now, 'painel-web'),
+            (product_id, 'entrada' if delta > 0 else 'saida', category, abs(delta), reason, order_id, now, self._quem()),
         )
         try:
             cursor.execute(
                 "INSERT INTO audit_logs(entity, entity_id, action, user, details, created_at) VALUES (?,?,?,?,?,?)",
-                ('product', product_id, 'update', 'painel-web', f"stock: {'+' if delta > 0 else ''}{delta} ({reason})", now),
+                ('product', product_id, 'update', self._quem(), f"stock: {'+' if delta > 0 else ''}{delta} ({reason})", now),
             )
         except sqlite3.Error:
             pass  # banco sem tabela de auditoria: a movimentação já registra o essencial
 
+    # ------------------------------------------------------------ login (usuário e senha)
+
+    def _conn_auth(self) -> sqlite3.Connection:
+        """Conexão própria do login (linhas com nome de coluna), separada da conexão das
+        rotas, que esperam tuplas. Fechada no fim da requisição."""
+        if 'auth_conn' not in g:
+            if not os.path.isfile(self.db_path):
+                raise RuntimeError(f"Banco de dados não encontrado: {self.db_path}")
+            g.auth_conn = sqlite3.connect(self.db_path, timeout=10)
+            g.auth_conn.row_factory = sqlite3.Row
+        return g.auth_conn
+
+    def _sessao(self):
+        """Usuário da sessão do cookie, conferido no banco a cada requisição: usuário
+        excluído, senha/perfil trocados (sessões apagadas) ou perfil sem acesso ao painel
+        derrubam o acesso na hora. Renova o prazo a cada uso."""
+        token = request.cookies.get(COOKIE_SESSAO) or ''
+        if not token or len(token) > 200:
+            return None
+        conn = self._conn_auth()
+        r = conn.execute(
+            "SELECT s.id, s.lembrar, s.expires_at, s.last_seen, u.id AS uid, u.username, u.role "
+            "FROM web_sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
+            (_hash_token(token),)).fetchone()
+        agora = time.time()
+        if not r or r["expires_at"] < agora:
+            if r:
+                conn.execute("DELETE FROM web_sessions WHERE id=?", (r["id"],))
+                conn.commit()
+            return None
+        if not _entra_no_painel(r["role"]):
+            return None
+        if agora - r["last_seen"] > 300:  # grava no máximo a cada 5 min
+            novo_fim = agora + (DURACAO_LEMBRAR_S if r["lembrar"] else DURACAO_SESSAO_S)
+            conn.execute("UPDATE web_sessions SET last_seen=?, expires_at=? WHERE id=?", (agora, novo_fim, r["id"]))
+            conn.commit()
+        return {"id": r["uid"], "username": r["username"], "role": r["role"], "sessao": r["id"], "lembrar": bool(r["lembrar"])}
+
+    def _bloqueado(self, ip: str) -> int:
+        with self._trava_pin:
+            _, ate, _ = self._falhas_pin.get(ip, (0, 0.0, None))
+            return int(ate - time.time()) + 1 if ate > time.time() else 0
+
+    def _falhou(self, ip: str) -> None:
+        with self._trava_pin:
+            falhas, _, _ = self._falhas_pin.get(ip, (0, 0.0, None))
+            falhas += 1
+            self._falhas_pin[ip] = (0, time.time() + BLOQUEIO_PIN_S, None) if falhas >= MAX_FALHAS_PIN else (falhas, 0.0, None)
+
+    def _quem(self) -> str:
+        """Quem fez a alteração (movimentação, histórico): o usuário logado no painel."""
+        u = g.get('usuario')
+        return f"{u['username']} (painel)" if u else 'painel-web'
+
     def _setup_auth(self):
-        """Exige o PIN de acesso (cabeçalho X-Panel-Token) em toda a API.
-        Só o cabeçalho: PIN na URL ficaria em histórico do navegador e em logs."""
-        if not self.access_token:
-            return
+        """Toda a API do painel exige login (cookie de sessão). Livres: páginas,
+        arquivos estáticos, nome/logo da empresa e as rotas de entrar/sair."""
+        livres = {'/api/login', '/api/logout', '/api/sessao'}
 
         @self.app.before_request
-        def check_token():
-            if not request.path.startswith('/api/'):
-                return None  # páginas/estáticos ficam livres, só a API é protegida
-            ip = request.remote_addr or '?'
-            agora = time.time()
-            fornecido = request.headers.get('X-Panel-Token') or ''
-            with self._trava_pin:
-                falhas, ate, ultimo = self._falhas_pin.get(ip, (0, 0.0, None))
-                if ate > agora:
-                    return jsonify({'success': False,
-                                    'error': f'Muitas tentativas com PIN errado. Aguarde {int(ate - agora) + 1}s.'}), 429
-                if fornecido != self.access_token:
-                    # Só conta PIN diferente do último errado: a atualização automática da
-                    # página repete o mesmo PIN salvo e não deve bloquear o aparelho.
-                    if fornecido and fornecido != ultimo:
-                        falhas += 1
-                        self._falhas_pin[ip] = ((0, agora + BLOQUEIO_PIN_S, None) if falhas >= MAX_FALHAS_PIN
-                                                else (falhas, 0.0, fornecido))
-                    return jsonify({'success': False, 'error': 'PIN de acesso inválido ou ausente'}), 401
-                self._falhas_pin.pop(ip, None)
+        def check_sessao():
+            if not request.path.startswith('/api/') or request.path in livres:
+                return None
+            # Contra CSRF: alteração só com o cabeçalho que o próprio painel manda (um
+            # formulário de outro site não envia cabeçalho personalizado; o cookie já é
+            # SameSite=Strict).
+            if request.method not in ('GET', 'HEAD', 'OPTIONS') and request.headers.get('X-Painel') != '1':
+                return jsonify({'success': False, 'error': 'Requisição recusada.'}), 403
+            try:
+                u = self._sessao()
+            except (sqlite3.Error, RuntimeError) as e:
+                return jsonify({'success': False, 'error': f'Banco de dados indisponível: {e}'}), 503
+            if not u:
+                return jsonify({'success': False, 'error': 'Entre com seu usuário e senha.', 'login': True}), 401
+            g.usuario = u
             # Licença DWM bloqueada: o painel continua mostrando, mas não altera nada.
             if request.method not in ('GET', 'HEAD', 'OPTIONS') and self.somente_leitura and self.somente_leitura():
                 return jsonify({'success': False,
                                 'error': 'Licença DWM bloqueada: o sistema está em modo somente leitura até a fatura ser regularizada.'}), 423
             return None
+
+        @self.app.route('/api/sessao', methods=['GET'])
+        def sessao():
+            try:
+                u = self._sessao()
+            except (sqlite3.Error, RuntimeError):
+                u = None
+            if not u:
+                return jsonify({'success': False, 'login': True}), 401
+            return jsonify({'success': True, 'usuario': {'username': u['username'], 'lembrar': u['lembrar']}})
+
+        @self.app.route('/api/login', methods=['POST'])
+        def login():
+            if request.headers.get('X-Painel') != '1':
+                return jsonify({'success': False, 'error': 'Requisição recusada.'}), 403
+            ip = request.remote_addr or '?'
+            espera = self._bloqueado(ip)
+            if espera:
+                return jsonify({'success': False, 'error': f'Muitas tentativas erradas neste aparelho. Aguarde {espera}s.'}), 429
+            dados = request.get_json(silent=True) or {}
+            usuario = str(dados.get('usuario') or '').strip()
+            senha = str(dados.get('senha') or '')
+            lembrar = bool(dados.get('lembrar'))
+            if not usuario or not senha:
+                return jsonify({'success': False, 'error': 'Informe usuário e senha.'}), 400
+            try:
+                conn = self._conn_auth()
+            except RuntimeError as e:
+                return jsonify({'success': False, 'error': str(e)}), 503
+            from core.services import AuthService  # mesma conferência e bloqueio do sistema
+            auth = AuthService(_BancoPainel(conn))
+            u = auth.authenticate(usuario, senha)
+            if not u:
+                self._falhou(ip)
+                return jsonify({'success': False, 'error': auth.last_error or 'Usuário ou senha inválidos.'}), 401
+            if not _entra_no_painel(u.role):
+                return jsonify({'success': False, 'error': 'Seu perfil não usa o painel da cozinha. Fale com o administrador.'}), 403
+            from core.senhas import senha_fraca
+            if senha_fraca(u.username, senha):
+                return jsonify({'success': False, 'error': 'Sua senha é a padrão ou fácil demais. Troque-a no computador do sistema antes de usar o painel.'}), 403
+            with self._trava_pin:
+                self._falhas_pin.pop(ip, None)
+            token = secrets.token_urlsafe(32)
+            agora = time.time()
+            duracao = DURACAO_LEMBRAR_S if lembrar else DURACAO_SESSAO_S
+            conn.execute("DELETE FROM web_sessions WHERE expires_at < ?", (agora,))
+            conn.execute(
+                "INSERT INTO web_sessions(token_hash, user_id, lembrar, created_at, expires_at, last_seen, ip, agent) VALUES (?,?,?,?,?,?,?,?)",
+                (_hash_token(token), u.id, int(lembrar), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), agora + duracao, agora, ip,
+                 (request.headers.get('User-Agent') or '')[:200]))
+            conn.commit()
+            try:
+                from core.logger import log_event
+                log_event(f"✅ Login: {u.username} (Perfil: {u.role}) [painel web {ip}]")
+            except Exception:
+                pass
+            resp = jsonify({'success': True, 'usuario': {'username': u.username, 'lembrar': lembrar}})
+            # HttpOnly: o JavaScript da página não lê o código; SameSite=Strict: outro site
+            # não o usa. Sem "manter conectado" o cookie some ao fechar o navegador.
+            resp.set_cookie(COOKIE_SESSAO, token, max_age=DURACAO_LEMBRAR_S if lembrar else None,
+                            httponly=True, samesite='Strict', path='/')
+            return resp
+
+        @self.app.route('/api/logout', methods=['POST'])
+        def logout():
+            token = request.cookies.get(COOKIE_SESSAO) or ''
+            if token and request.headers.get('X-Painel') == '1':
+                try:
+                    conn = self._conn_auth()
+                    conn.execute("DELETE FROM web_sessions WHERE token_hash=?", (_hash_token(token),))
+                    conn.commit()
+                except (sqlite3.Error, RuntimeError):
+                    pass
+            resp = jsonify({'success': True})
+            resp.delete_cookie(COOKIE_SESSAO, path='/', samesite='Strict')
+            return resp
 
     def _setup_routes(self):
         """Configura as rotas da API"""
@@ -136,16 +317,36 @@ class WebServer:
         # Página de seleção de acesso
         @self.app.route('/')
         def root():
-            """Redireciona para página de acesso"""
-            # Detectar se é localhost ou rede
-            host = request.host.split(':')[0]
-            if host in ['localhost', '127.0.0.1', '::1']:
-                # Acesso local - vai direto para o painel
-                return send_from_directory(self.web_dir, 'index.html')
-            else:
-                # Acesso de outro dispositivo - mostra página de acesso
-                return send_from_directory(self.web_dir, 'acesso.html')
+            """Painel direto (pede usuário e senha se o aparelho não estiver conectado)."""
+            return send_from_directory(self.web_dir, 'index.html')
         
+        @self.app.route('/painel-info')
+        def painel_info():
+            """Nome da confeitaria para o cabeçalho do painel (público: aparece já na tela
+            de login; não revela nada além do nome)."""
+            nome, tem_logo = "Confeitaria", False
+            try:
+                conn = self._get_conn()
+                r = conn.execute("SELECT name, logo_path FROM company WHERE id=1").fetchone()
+                if r:
+                    nome = r[0] or nome
+                    tem_logo = bool(r[1] and os.path.isfile(r[1]))
+            except Exception:
+                pass
+            return jsonify({'nome': nome, 'logo': tem_logo})
+
+        @self.app.route('/empresa-logo')
+        def empresa_logo():
+            """Logo escolhida em Configurações → Empresa (só o arquivo registrado no banco)."""
+            try:
+                r = self._get_conn().execute("SELECT logo_path FROM company WHERE id=1").fetchone()
+                caminho = r[0] if r else None
+            except Exception:
+                caminho = None
+            if not caminho or not os.path.isfile(caminho):
+                return ('', 404)
+            return send_from_directory(os.path.dirname(caminho), os.path.basename(caminho), max_age=300)
+
         @self.app.route('/index.html')
         def index():
             """Página principal do painel"""
@@ -153,8 +354,8 @@ class WebServer:
         
         @self.app.route('/acesso.html')
         def acesso():
-            """Página de seleção de acesso"""
-            return send_from_directory(self.web_dir, 'acesso.html')
+            """Endereço antigo (tela intermediária das versões anteriores): vai ao painel."""
+            return redirect('/', code=301)
         
         @self.app.route('/logo.ico')
         def favicon():
@@ -182,7 +383,7 @@ class WebServer:
                 cursor = conn.cursor()
                 
                 cursor.execute("""
-                    SELECT id, name, description, size, stock, min_stock
+                    SELECT id, name, description, size, stock, min_stock, unit
                     FROM products
                     ORDER BY name
                 """)
@@ -193,18 +394,19 @@ class WebServer:
                         'id': row['id'],
                         'name': row['name'],
                         'quantity': row['stock'],
+                        'unit': row['unit'] or 'un',
                         'min_quantity': row['min_stock'],
                         'description': row['description'] or '',
                         'size': row['size'] or ''
                     })
-                
+
                 conn.close()
-                
+
                 return jsonify({
                     'success': True,
                     'products': products
                 })
-                
+
             except Exception as e:
                 logger.error(f"Erro ao buscar produtos: {e}")
                 print(f"❌ Erro na API /api/products: {e}")
@@ -225,7 +427,7 @@ class WebServer:
                 cursor = conn.cursor()
 
                 cursor.execute("""
-                    SELECT id, name, description, size, stock, min_stock
+                    SELECT id, name, description, size, stock, min_stock, unit
                     FROM products
                     ORDER BY (stock <= 0), name
                 """)
@@ -238,6 +440,7 @@ class WebServer:
                         'description': row['description'] or '',
                         'size': row['size'] or '',
                         'stock': row['stock'],
+                        'unit': row['unit'] or 'un',
                         'min_quantity': row['min_stock']
                     })
                 
@@ -274,6 +477,7 @@ class WebServer:
                         'manual' as source,
                         NULL as customer_name,
                         p.name as product_name,
+                        p.unit as unit,
                         pi.size as product_size,
                         pi.quantity,
                         NULL as delivery_date,
@@ -297,6 +501,7 @@ class WebServer:
                         'product': row['product_name'] or 'Produto não especificado',
                         'size': row['product_size'] or '',
                         'quantity': row['quantity'],
+                        'unit': row['unit'] or 'un',
                         'delivery_date': '',
                         'status': 'pending',
                         'notes': row['notes'] or ''
@@ -330,7 +535,7 @@ class WebServer:
                         'error': 'Campo "quantity" é obrigatório'
                     }), 400
                 
-                quantity = int(data['quantity'])
+                quantity = _qtd(data['quantity'], _unidade(self._get_conn().cursor(), product_id), 0)
                 
                 if quantity < 0:
                     return jsonify({
@@ -342,7 +547,7 @@ class WebServer:
                 cursor = conn.cursor()
                 
                 # Verificar se o produto existe
-                cursor.execute("SELECT id, name, stock FROM products WHERE id = ?", (product_id,))
+                cursor.execute("SELECT id, name, stock, unit FROM products WHERE id = ?", (product_id,))
                 product = cursor.fetchone()
 
                 if not product:
@@ -358,13 +563,13 @@ class WebServer:
                     SET stock = ?
                     WHERE id = ?
                 """, (quantity, product_id))
-                self._registrar_movimento(cursor, product_id, quantity - (product[2] or 0),
+                self._registrar_movimento(cursor, product_id, round(quantity - (product[2] or 0), 3),
                                           'Ajuste de Inventário', 'Contagem no painel da cozinha')
 
                 conn.commit()
                 conn.close()
                 
-                print(f"✅ Estoque atualizado: {product[1]} → {quantity} unidades")
+                print(f"✅ Estoque atualizado: {product[1]} → {quantity} {product[3] or 'un'}")
                 
                 return jsonify({
                     'success': True,
@@ -417,7 +622,8 @@ class WebServer:
 
                 updates, params = [], []
                 if 'quantity' in data:
-                    new_quantity = int(data['quantity'])
+                    cursor.execute("SELECT product_id FROM production_items WHERE id = ?", (real_id,))
+                    new_quantity = _qtd(data['quantity'], _unidade(cursor, cursor.fetchone()[0]), 0.001)
                     if new_quantity <= 0:
                         return jsonify({'success': False, 'error': 'Quantidade deve ser maior que zero'}), 400
                     updates.append("quantity = ?")
@@ -464,7 +670,7 @@ class WebServer:
                     }), 400
                 
                 product_id = int(data['product_id'])
-                quantity = int(data['quantity'])
+                quantity = _qtd(data['quantity'], _unidade(self._get_conn().cursor(), product_id), 0.001)
                 size = data.get('size', '')
                 notes = data.get('notes', 'Adicionado via web')
                 
@@ -590,7 +796,7 @@ class WebServer:
                 cursor = conn.cursor()
                 
                 cursor.execute("""
-                    SELECT id, name, size
+                    SELECT id, name, size, unit
                     FROM products
                     ORDER BY name
                 """)
@@ -600,7 +806,8 @@ class WebServer:
                     products.append({
                         'id': row['id'],
                         'name': row['name'],
-                        'size': row['size'] or ''
+                        'size': row['size'] or '',
+                        'unit': row['unit'] or 'un'
                     })
                 
                 conn.close()
@@ -658,7 +865,7 @@ class WebServer:
                     # Atualizar estoque do produto
                     cursor.execute("""
                         UPDATE products 
-                        SET stock = stock + ?
+                        SET stock = ROUND(stock + ?, 3)
                         WHERE id = ?
                     """, (quantity, product_id))
                     
@@ -666,8 +873,8 @@ class WebServer:
                     # filtrado na tela de Movimentação do desktop)
                     cursor.execute("""
                         INSERT INTO stock_movements (product_id, type, category, quantity, reason, created_at, created_by)
-                        VALUES (?, 'entrada', 'Produção', ?, 'Produção concluída (painel web)', ?, 'painel-web')
-                    """, (product_id, quantity, now))
+                        VALUES (?, 'entrada', 'Produção', ?, 'Produção concluída (painel web)', ?, ?)
+                    """, (product_id, quantity, now, self._quem()))
                     
                     total_items += quantity
 
@@ -710,15 +917,15 @@ class WebServer:
                         'error': 'Campo "change" é obrigatório'
                     }), 400
                 
-                change = int(data['change'])
+                change = round(float(str(data['change']).replace(",", ".")), 3)
                 
                 conn = self._get_conn()
                 cursor = conn.cursor()
                 
                 # Buscar quantidade atual
                 cursor.execute("""
-                    SELECT id, name, stock 
-                    FROM products 
+                    SELECT id, name, stock, unit
+                    FROM products
                     WHERE id = ?
                 """, (product_id,))
                 product = cursor.fetchone()
@@ -730,7 +937,8 @@ class WebServer:
                         'error': 'Produto não encontrado'
                     }), 404
                 
-                new_quantity = max(0, product[2] + change)  # Não permite negativo
+                new_quantity = max(0, round(product[2] + change, 3))  # Não permite negativo
+                new_quantity = int(new_quantity) if new_quantity == int(new_quantity) else new_quantity
 
                 # Atualizar quantidade (a diferença real vira movimentação de ajuste)
                 cursor.execute("""
@@ -738,18 +946,18 @@ class WebServer:
                     SET stock = ?
                     WHERE id = ?
                 """, (new_quantity, product_id))
-                self._registrar_movimento(cursor, product_id, new_quantity - product[2],
+                self._registrar_movimento(cursor, product_id, round(new_quantity - product[2], 3),
                                           'Ajuste de Inventário', 'Ajuste no painel da cozinha (+/−)')
 
                 conn.commit()
                 conn.close()
                 
                 action = "adicionadas" if change > 0 else "removidas"
-                print(f"✅ Estoque ajustado: {product[1]} ({change:+d}) → {new_quantity} unidades")
+                print(f"✅ Estoque ajustado: {product[1]} ({change:+g}) → {new_quantity} {product[3] or 'un'}")
                 
                 return jsonify({
                     'success': True,
-                    'message': f'{abs(change)} unidades {action}',
+                    'message': f'{abs(change):g} {action}',
                     'product_id': product_id,
                     'new_quantity': new_quantity
                 })
@@ -851,14 +1059,14 @@ def start_server(db_path: str, web_dir: str, port: int = 5000, access_token: str
         db_path: Caminho para o banco de dados
         web_dir: Diretório dos arquivos web
         port: Porta do servidor
-        access_token: PIN exigido para acessar a API (/api/*)
+        access_token: ignorado (PIN das versões anteriores; agora o login é por usuário)
     """
     try:
         print(f"🔧 Configurando servidor Flask...")
         print(f"   - Banco: {db_path}")
         print(f"   - Web: {web_dir}")
         print(f"   - Porta: {port}")
-        print(f"   - PIN de acesso exigido: {'sim' if access_token else 'NÃO (desprotegido!)'}")
+        print("   - Acesso: login com usuário e senha")
 
         server = WebServer(db_path, web_dir, port, access_token)
         print(f"✅ Servidor Flask configurado")

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from api import ErroApi, Pedido, contexto, rota
-from api.util import agora, auditar, diff, ids, linhas, texto
+from api.util import agora, auditar, diff, ids, like, linhas, texto
+
+ESC = " ESCAPE '\\'"
 
 # ---------------------------------------------------------------- clientes
 
@@ -14,10 +16,10 @@ def listar_clientes(p: Pedido) -> dict:
     db = contexto.db()
     termo = p.q("q").strip()
     if termo:
-        like = f"%{termo}%"
+        t = like(termo)
         rows = db.query(
-            "SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? OR address LIKE ? OR observation LIKE ? ORDER BY name",
-            (like, like, like, like),
+            "SELECT * FROM customers WHERE name LIKE ?{0} OR phone LIKE ?{0} OR address LIKE ?{0} OR observation LIKE ?{0} ORDER BY name".format(ESC),
+            (t, t, t, t),
         )
     else:
         rows = db.query("SELECT * FROM customers ORDER BY name")
@@ -114,6 +116,8 @@ def atualizar_etiqueta(p: Pedido) -> dict:
     nome = texto(p.c("name"))
     if not nome:
         raise ErroApi("O nome não pode estar vazio.")
+    if nome_antigo.lower() == "comum" and nome != nome_antigo:
+        raise ErroApi("\"Comum\" é a etiqueta padrão dos pedidos e não pode ser renomeada (a cor pode mudar).")
     if nome != nome_antigo and db.query("SELECT 1 FROM labels WHERE LOWER(name)=LOWER(?) AND id!=?", (nome, eid)):
         raise ErroApi("Já existe uma etiqueta com este nome.")
     with db.transaction():
@@ -140,6 +144,8 @@ def excluir_etiqueta(p: Pedido) -> dict:
     r = db.query("SELECT name FROM labels WHERE id=?", (eid,))
     if not r:
         raise ErroApi("Etiqueta não encontrada.", 404)
+    if r[0]["name"].lower() == "comum":
+        raise ErroApi("\"Comum\" é a etiqueta padrão dos pedidos e não pode ser excluída.")
     with db.transaction():
         # Pedidos com esta etiqueta passam a 'Comum' (comparação sem diferenciar maiúsculas,
         # igual ao renomear).

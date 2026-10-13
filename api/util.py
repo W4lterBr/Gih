@@ -31,6 +31,9 @@ def data_iso(valor: Any, campo: str = "data") -> str:
 
 
 def inteiro(valor: Any, campo: str, minimo: Optional[int] = None, maximo: Optional[int] = None) -> int:
+    # int(1.5) daria 1 sem avisar: número com casas decimais é recusado, não truncado.
+    if isinstance(valor, float) and not valor.is_integer():
+        raise ErroApi(f"'{campo}' deve ser um número inteiro.")
     try:
         n = int(valor)
     except (TypeError, ValueError):
@@ -48,6 +51,50 @@ def texto(valor: Any) -> Optional[str]:
         return None
     s = str(valor).strip()
     return s or None
+
+
+UNIDADES = ("un", "kg")
+
+
+def quantidade(valor: Any, campo: str, unidade: str = "un", minimo_un: int = 1, maximo: float = 1_000_000) -> float | int:
+    """Quantidade conforme a unidade do produto: "un" = inteiro; "kg" = até 3 casas
+    decimais (gramas), aceitando vírgula ("1,5")."""
+    if unidade != "kg":
+        return inteiro(valor, campo, minimo_un, int(maximo))
+    try:
+        n = round(float(str(valor).strip().replace(",", ".")), 3)
+    except (TypeError, ValueError):
+        raise ErroApi(f"Valor inválido em '{campo}'.")
+    if n != n or n in (float("inf"), float("-inf")):
+        raise ErroApi(f"Valor inválido em '{campo}'.")
+    minimo = 0.001 if minimo_un >= 1 else float(minimo_un)
+    if n < minimo:
+        raise ErroApi(f"'{campo}' deve ser maior que zero." if minimo_un >= 1 else f"'{campo}' não pode ser negativo.")
+    if n > maximo:
+        raise ErroApi(f"'{campo}' deve ser no máximo {maximo:g}.")
+    return int(n) if n == int(n) else n
+
+
+def unidade_de(db: Any, product_id: int) -> str:
+    r = db.query("SELECT unit FROM products WHERE id=?", (product_id,))
+    return (r[0]["unit"] if r and r[0]["unit"] else "un") if r else "un"
+
+
+def qtd_texto(q: Any, unidade: Optional[str]) -> str:
+    """1.5, "kg" -> "1,5 kg"; 3, "un" -> "3"."""
+    try:
+        n = float(q or 0)
+    except (TypeError, ValueError):
+        return str(q)
+    s = (f"{n:.3f}".rstrip("0").rstrip(".") if n != int(n) else str(int(n))).replace(".", ",")
+    return f"{s} kg" if unidade == "kg" else s
+
+
+def like(termo: str) -> str:
+    """Padrão para `coluna LIKE ? ESCAPE '\\'` que procura o texto literalmente:
+    % e _ digitados na busca não viram curinga."""
+    t = termo.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{t}%"
 
 
 def ids(valor: Any) -> list[int]:

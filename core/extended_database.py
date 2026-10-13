@@ -11,6 +11,29 @@ from core.database import Database
 from core.paths import base_dir
 
 
+SQL_SESSOES_WEB = """
+    CREATE TABLE IF NOT EXISTS web_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        lembrar INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        expires_at REAL NOT NULL,
+        last_seen REAL NOT NULL,
+        ip TEXT,
+        agent TEXT
+    )
+"""
+
+
+def encerrar_sessoes_web(db: Any, user_id: int) -> None:
+    """Desconecta o usuário do painel web (senha, perfil ou nome trocados; usuário excluído)."""
+    try:
+        db.execute("DELETE FROM web_sessions WHERE user_id=?", (user_id,))
+    except Exception:
+        pass
+
+
 # -----------------------------
 # Database helpers
 # -----------------------------
@@ -174,6 +197,15 @@ class ExtendedDatabase(Database):
         # erro de sintaxe e, se corrigida, apagaria os preços que o app usa hoje
         # (valor estimado, fechamento, perdas). Removida de propósito.)
 
+        # Migração: unidade de venda do produto. "un" (inteiro) ou "kg" (até 3 casas:
+        # gramas). Produtos em kg guardam estoque, pedidos, movimentações e produção em
+        # quilos com decimais (as colunas INTEGER do SQLite aceitam 1.5) e o preço é por
+        # kg. Depois da migração de requires_min_stock, que recria a tabela.
+        cur.execute("PRAGMA table_info(products)")
+        if "unit" not in [row[1] for row in cur.fetchall()]:
+            cur.execute("ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT 'un'")
+            self.conn.commit()
+
         # Preenche order_number em pedidos antigos
         cur.execute("SELECT id FROM orders WHERE order_number IS NULL OR order_number = '' ORDER BY id")
         rows = cur.fetchall()
@@ -183,6 +215,22 @@ class ExtendedDatabase(Database):
             for i, row in enumerate(rows, start=1):
                 cur.execute("UPDATE orders SET order_number=? WHERE id=?", (maxnum + i, row[0]))
             self.conn.commit()
+
+        # Migração: situação do pedido, separada do pagamento (status). "aberto" (a
+        # entregar), "entregue" ou "cancelado". Cancelar devolve o estoque reservado;
+        # entregue nunca devolve (nem ao excluir). Um pedido pode estar entregue e
+        # ainda aguardando pagamento (fiado).
+        cur.execute("PRAGMA table_info(orders)")
+        if "situacao" not in [row[1] for row in cur.fetchall()]:
+            cur.execute("ALTER TABLE orders ADD COLUMN situacao TEXT NOT NULL DEFAULT 'aberto'")
+            self.conn.commit()
+        # Bancos antigos guardavam a entrega no próprio status ("Entregue", "Cancelado"):
+        # passa para a situação. O estoque desses pedidos não é mexido (fica como está).
+        cur.execute("""UPDATE orders SET situacao='entregue' WHERE situacao='aberto'
+                       AND LOWER(status) IN ('entregue', 'completed', 'concluído', 'concluido')""")
+        cur.execute("""UPDATE orders SET situacao='cancelado' WHERE situacao='aberto'
+                       AND LOWER(status) IN ('cancelado', 'cancelled')""")
+        self.conn.commit()
 
         # Movimentações de estoque
         cur.execute("""
@@ -215,7 +263,9 @@ class ExtendedDatabase(Database):
             self.conn.commit()
             print("✓ Campo 'created_by' adicionado em stock_movements.")
 
-        # Etiquetas personalizadas
+        # Etiquetas personalizadas. As padrão só entram quando a tabela é criada: antes
+        # eram reinseridas a cada abertura e etiquetas excluídas voltavam sozinhas.
+        etiquetas_novas = not cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='labels'").fetchone()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS labels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,13 +321,100 @@ class ExtendedDatabase(Database):
             ("Especial", "#F59E0B")
         ]
         for label_name, color in default_labels:
-            existing = cur.execute("SELECT 1 FROM labels WHERE name=?", (label_name,)).fetchone()
+            # "Comum" é a etiqueta padrão dos pedidos: garante que exista sempre.
+            if not etiquetas_novas and label_name != "Comum":
+                continue
+            existing = cur.execute("SELECT 1 FROM labels WHERE LOWER(name)=LOWER(?)", (label_name,)).fetchone()
             if not existing:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cur.execute("INSERT INTO labels(name, color, created_at) VALUES (?,?,?)", (label_name, color, now))
         self.conn.commit()
 
+        self._init_custos(cur)
         self._ensure_indexes(cur)
+
+    def _init_custos(self, cur: Any) -> None:
+        """Custos: insumos comprados, histórico de compras e fichas técnicas (receitas).
+        Quantidades e valores ficam em TEXT com o número decimal exato digitado
+        ("0.395", "4.99"): REAL arredondaria em binário e o custo por grama/ml, que
+        depois é multiplicado por milhares de gramas, sairia levemente errado. As contas
+        são feitas com Decimal em core/custos.py."""
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ingredients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'ingrediente',
+                base_unit TEXT NOT NULL CHECK (base_unit IN ('g','ml','un')),
+                yield_pct TEXT NOT NULL DEFAULT '100',
+                density TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ingredient_purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ingredient_id INTEGER NOT NULL REFERENCES ingredients(id) ON DELETE CASCADE,
+                purchased_at TEXT NOT NULL,
+                supplier TEXT,
+                packages TEXT NOT NULL,
+                package_qty TEXT NOT NULL,
+                package_unit TEXT NOT NULL,
+                total TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                created_by TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+                yield_qty TEXT NOT NULL,
+                yield_unit TEXT NOT NULL,
+                labor_minutes TEXT NOT NULL DEFAULT '0',
+                loss_pct TEXT NOT NULL DEFAULT '0',
+                extra_cost TEXT NOT NULL DEFAULT '0',
+                margin_pct TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recipe_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+                ingredient_id INTEGER REFERENCES ingredients(id),
+                sub_recipe_id INTEGER REFERENCES recipes(id),
+                quantity TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                CHECK ((ingredient_id IS NULL) <> (sub_recipe_id IS NULL))
+            )
+        """)
+        # Sessões do painel web (login com usuário e senha; o cookie guarda só um código
+        # aleatório e aqui fica o hash dele). Ver core/web_server.py.
+        cur.execute(SQL_SESSOES_WEB)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cost_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cost_basis TEXT NOT NULL DEFAULT 'ultima',
+                avg_days INTEGER NOT NULL DEFAULT 90,
+                labor_hour TEXT NOT NULL DEFAULT '0',
+                fixed_pct TEXT NOT NULL DEFAULT '0',
+                tax_pct TEXT NOT NULL DEFAULT '0',
+                fee_pct TEXT NOT NULL DEFAULT '0',
+                margin_pct TEXT NOT NULL DEFAULT '30',
+                rounding TEXT NOT NULL DEFAULT '0.01',
+                updated_at TEXT NOT NULL
+            )
+        """)
+        if not cur.execute("SELECT 1 FROM cost_settings WHERE id=1").fetchone():
+            cur.execute("INSERT INTO cost_settings(id, updated_at) VALUES (1, ?)", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+        self.conn.commit()
 
     def _ensure_indexes(self, cur: Any) -> None:
         """Índices para as consultas mais frequentes (filtros por data/status,
@@ -296,6 +433,11 @@ class ExtendedDatabase(Database):
             ("idx_stock_mov_order", "stock_movements(order_id)"),
             ("idx_audit_entity", "audit_logs(entity, entity_id)"),
             ("idx_production_items_product", "production_items(product_id)"),
+            ("idx_ing_purchases_ing", "ingredient_purchases(ingredient_id, purchased_at)"),
+            ("idx_recipe_items_recipe", "recipe_items(recipe_id)"),
+            ("idx_recipe_items_ing", "recipe_items(ingredient_id)"),
+            ("idx_recipe_items_sub", "recipe_items(sub_recipe_id)"),
+            ("idx_recipes_product", "recipes(product_id)"),
         ]
         for name, target in indexes:
             try:
@@ -338,59 +480,45 @@ class ExtendedDatabase(Database):
 
 
 def check_and_reserve_stock(db: Any) -> int:
-    """
-    Verifica pedidos com data de entrega = hoje que ainda não tiveram estoque reservado.
-    Baixa o estoque e marca como reservado.
-    
-    Returns:
-        int: Número de pedidos processados
+    """Baixa o estoque dos pedidos com entrega hoje ou já vencida (o app pode ter
+    ficado fechado no dia) que ainda não foram reservados. Pedidos cancelados ficam
+    de fora.
+
+    Cada pedido é tudo-ou-nada (marca + baixa + movimentação numa transação) e a
+    marca é tomada primeiro com "stock_reserved=0" na condição: uma falha no meio
+    não deixa estoque baixado sem a marca (antes a próxima rodada baixava de novo).
     """
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        
-        # Busca pedidos com data de entrega hoje OU já vencida (ex: app ficou fechado
-        # no dia da entrega) que ainda não tiveram estoque reservado
         rows = db.query("""
             SELECT id, product_id, quantity
             FROM orders
             WHERE DATE(delivery_date) <= ?
             AND stock_reserved = 0
+            AND COALESCE(situacao, 'aberto') != 'cancelado'
             AND product_id IS NOT NULL
         """, (today,))
-        
-        if not rows:
-            return 0
-        
         processed = 0
         for row in rows:
-            oid = row["id"]
+            oid = int(row["id"])
             try:
-                oid = int(row["id"])
-                prod_id = int(row["product_id"])
-                qty = int(row["quantity"])
-                
-                # Baixa estoque
-                db.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, prod_id))
-                
-                # Registra movimentação
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                db.execute(
-                    "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at) VALUES (?,?,?,?,?,?)",
-                    (prod_id, 'saida', qty, 'Pedido', oid, now)
-                )
-                
-                # Marca como reservado
-                db.execute("UPDATE orders SET stock_reserved=1 WHERE id=?", (oid,))
-                
+                with db.transaction():
+                    cur = db.execute("UPDATE orders SET stock_reserved=1 WHERE id=? AND stock_reserved=0", (oid,))
+                    if cur.rowcount != 1:
+                        continue  # outro caminho já reservou
+                    qty = int(row["quantity"])
+                    prod_id = int(row["product_id"])
+                    db.execute("UPDATE products SET stock = ROUND(stock - ?, 3) WHERE id=?", (qty, prod_id))
+                    db.execute(
+                        "INSERT INTO stock_movements(product_id, type, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?)",
+                        (prod_id, 'saida', qty, 'Pedido', oid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'sistema'),
+                    )
                 processed += 1
-                
             except Exception as e:
                 print(f"⚠️ Erro ao reservar estoque do pedido {oid}: {e}")
-                continue
-        
-        print(f"✓ {processed} pedido(s) tiveram estoque reservado automaticamente")
+        if processed:
+            print(f"✓ {processed} pedido(s) tiveram estoque reservado automaticamente")
         return processed
-        
     except Exception as e:
         print(f"Erro ao verificar reservas de estoque: {e}")
         return 0

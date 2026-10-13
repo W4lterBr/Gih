@@ -107,7 +107,12 @@ def reabrir_banco() -> None:
 
 
 def definir_usuario(u: Optional[dict[str, Any]]) -> None:
+    """Sessão do usuário logado. Acrescenta as telas que o perfil pode abrir
+    (api/permissoes.py), que a interface usa para montar o menu."""
     global usuario
+    if u:
+        from api import permissoes
+        u = {**u, "telas": permissoes.telas(u.get("role")), "perfil": permissoes.nome(u.get("role"))}
     usuario = u
     if _db is not None:
         _db.current_user = u["username"] if u else None

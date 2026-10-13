@@ -27,10 +27,10 @@ datas = [
 ]
 
 hidden_imports = [
-    'api', 'api.banco', 'api.cadastros', 'api.configuracoes', 'api.contexto', 'api.estoque', 'api.licenca',
+    'api', 'api.banco', 'api.cadastros', 'api.configuracoes', 'api.contexto', 'api.custos', 'api.estoque', 'api.licenca', 'api.permissoes',
     'api.pedidos', 'api.producao', 'api.relatorios', 'api.sistema', 'api.tarefas', 'api.util',
-    'core.config', 'core.credenciais', 'core.database', 'core.extended_database', 'core.formatting', 'core.licenca',
-    'core.logger', 'core.models', 'core.paths', 'core.security', 'core.services', 'core.stock_categories',
+    'core.config', 'core.credenciais', 'core.custos', 'core.database', 'core.extended_database', 'core.formatting', 'core.licenca',
+    'core.logger', 'core.models', 'core.paths', 'core.security', 'core.senhas', 'core.services', 'core.stock_categories',
     'core.web_server',
     'flask', 'bcrypt', 'yaml', 'psutil', 'sqlite3',
     'openpyxl', 'openpyxl.styles', 'openpyxl.drawing.image', 'PIL', 'PIL.Image',

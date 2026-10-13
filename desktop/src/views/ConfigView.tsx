@@ -14,8 +14,9 @@ const ABAS_ADMIN: [View, string][] = [
 const ABAS_USUARIO: [View, string][] = [["cfg-cozinha", "Painel da cozinha"], ["cfg-licenca", "Licença DWM"], ["cfg-aparencia", "Aparência"], ["cfg-conta", "Minha conta"]];
 
 export function ConfigView({ view, onView, escuro, onTema }: { view: View; onView: (v: View) => void; escuro: boolean; onTema: (escuro: boolean) => void }) {
-  const { admin } = useApp();
-  const abas = admin ? ABAS_ADMIN : ABAS_USUARIO;
+  const { admin, pode } = useApp();
+  // Endereço do painel web: só para quem entra nele (cozinha; recepção não usa).
+  const abas = admin ? ABAS_ADMIN : ABAS_USUARIO.filter(([v]) => v !== "cfg-cozinha" || pode("producao"));
   const atual = abas.some((a) => a[0] === view) ? view : abas[0][0];
   return (
     <section className="view">
@@ -93,11 +94,21 @@ function Empresa() {
 
 // ---------------------------------------------------------------- usuários
 
+/** Os mesmos perfis de api/permissoes.py (o motor confere em toda ação). */
+const PERFIS: { role: string; nome: string; descricao: string }[] = [
+  { role: "admin", nome: "Administrador", descricao: "Tudo: custos, relatórios, usuários, empresa, banco e licença." },
+  { role: "recepcao", nome: "Recepção", descricao: "Pedidos e clientes. Vê produção, pronta entrega e produtos. Sem custos nem relatórios." },
+  { role: "cozinha", nome: "Cozinha", descricao: "Produção, estoque e painel no celular. Vê os pedidos, sem alterar. Sem clientes nem custos." },
+];
+
 function UsuarioDialog({ u, onClose, onSalvo }: { u: Usuario | null; onClose: () => void; onSalvo: () => void }) {
-  const [f, setF] = useState({ username: u?.username ?? "", password: "", confirmar: "", role: u?.role ?? "common" });
+  // Perfil antigo ("common"/"func") continua até o administrador escolher um dos 3.
+  const antigo = !!u && !PERFIS.some((p) => p.role === u.role);
+  const [f, setF] = useState({ username: u?.username ?? "", password: "", confirmar: "", role: u?.role ?? "" });
   const [erro, setErro] = useState("");
   const salvar = async () => {
     if (f.password !== f.confirmar) { setErro("As senhas não coincidem"); return; }
+    if (!f.role) { setErro("Escolha o perfil do usuário."); return; }
     try {
       const corpo = { username: f.username, password: f.password, role: f.role };
       if (u) await api.put(`/usuarios/${u.id}`, corpo); else await api.post("/usuarios", corpo);
@@ -113,14 +124,16 @@ function UsuarioDialog({ u, onClose, onSalvo }: { u: Usuario | null; onClose: ()
           <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} autoComplete="new-password" />
         </Campo>
         <Campo rotulo="Confirmar senha"><input type="password" value={f.confirmar} onChange={(e) => setF({ ...f, confirmar: e.target.value })} autoComplete="new-password" /></Campo>
-        <Campo rotulo="Perfil" largura="1 / -1">
-          <div className="seg">
-            <button type="button" aria-pressed={f.role === "common"} onClick={() => setF({ ...f, role: "common" })}>Usuário</button>
-            <button type="button" aria-pressed={f.role === "admin"} onClick={() => setF({ ...f, role: "admin" })}>Administrador</button>
+        <Campo rotulo="Perfil" largura="1 / -1" erro={antigo && f.role === u?.role ? "Perfil da versão antiga (acesso completo, menos administração). Escolha Recepção ou Cozinha." : undefined}>
+          <div className="perfis">
+            {PERFIS.map((p) => (
+              <button type="button" key={p.role} className="perfil-opcao" aria-pressed={f.role === p.role} onClick={() => setF({ ...f, role: p.role })}>
+                <b>{p.nome}</b><span>{p.descricao}</span>
+              </button>
+            ))}
           </div>
         </Campo>
       </div>
-      <p className="nota-rodape">Administradores gerenciam usuários, banco de dados e veem o histórico de alterações.</p>
       {erro && <p className="form-erro">{erro}</p>}
     </Modal>
   );
@@ -141,7 +154,7 @@ function Usuarios() {
         {dados?.usuarios.map((u) => (
           <div className="cert-linha" key={u.id}>
             <span className="av conta-av">{sigla(u.username)}</span>
-            <div className="cert-info"><b>{u.username}{u.id === usuario.id && <span className="tag-leitura">você</span>}</b><span className="meta">{u.role === "admin" ? "Administrador" : "Usuário"}</span></div>
+            <div className="cert-info"><b>{u.username}{u.id === usuario.id && <span className="tag-leitura">você</span>}</b><span className="meta">{u.perfil ?? u.role}</span></div>
             <div className="cert-acoes">
               <button className="btn" onClick={() => setEd({ u })}>Editar</button>
               <button className="btn perigo" onClick={() => excluir(u)} disabled={u.id === usuario.id}>Excluir</button>
@@ -299,11 +312,30 @@ function Banco() {
 
 // ---------------------------------------------------------------- painel da cozinha
 
+interface Aparelho { id: number; usuario: string; lembrar: boolean; entrou: string; ultimo_uso: string; ip: string | null; aparelho: string | null }
+
+/** "Mozilla/5.0 (Linux; Android 14; SM-A546E) …" -> "Android"; só para reconhecer o aparelho. */
+function nomeAparelho(ua: string | null) {
+  const u = ua ?? "";
+  if (/iPhone|iPad/i.test(u)) return /iPad/i.test(u) ? "iPad" : "iPhone";
+  if (/Android/i.test(u)) return "Android";
+  if (/Windows/i.test(u)) return "Windows";
+  if (/Mac OS/i.test(u)) return "Mac";
+  return "Navegador";
+}
+
 function Cozinha() {
-  const { toast } = useApp();
-  const { dados } = useCarregar(() => api.get<{ url: string; local: string; pin: string }>("/painel-cozinha"), []);
+  const { toast, admin, confirmar } = useApp();
+  const { dados, recarregar } = useCarregar(() => api.get<{ url: string; local: string; aparelhos?: Aparelho[] }>("/painel-cozinha"), []);
   if (!dados) return <div className="loading">Carregando…</div>;
   const copiar = (t: string) => navigator.clipboard.writeText(t).then(() => toast("Copiado."), () => toast("Não foi possível copiar.", true));
+  const desconectar = async (a: Aparelho | null) => {
+    const ok = await confirmar({ titulo: a ? "Desconectar aparelho" : "Desconectar todos", ok: "Desconectar", perigo: true,
+      texto: a ? <>O aparelho de <b>{a.usuario}</b> ({nomeAparelho(a.aparelho)}) vai pedir usuário e senha de novo.</> : "Todos os aparelhos vão pedir usuário e senha de novo." });
+    if (!ok) return;
+    try { await api.post("/painel-cozinha/desconectar", a ? { id: a.id } : { todos: true }); toast("Desconectado."); recarregar(true); }
+    catch (e) { toast((e as Error).message, true); }
+  };
   return (
     <div className="card">
       <div className="set">
@@ -314,13 +346,28 @@ function Cozinha() {
         </div>
       </div>
       <div className="set">
-        <div><b>PIN de acesso</b><p>O painel pede este PIN na primeira vez em cada aparelho.</p></div>
-        <div className="ctl linha-ctl"><code className="codigo pin">{dados.pin}</code></div>
+        <div><b>Acesso com usuário e senha</b><p>Entram no painel os perfis <b>Cozinha</b> e <b>Administrador</b> (Recepção não). Marcando "Manter conectado", o aparelho fica conectado por 30 dias desde o último uso. Trocar a senha, o perfil ou o nome do usuário desconecta os aparelhos dele.</p></div>
       </div>
       <div className="set">
         <div><b>Abrir neste computador</b><p>Mesmo painel que a cozinha usa: lista de produção e pronta entrega.</p></div>
         <div className="ctl"><button className="btn" onClick={() => abrirUrl(dados.local)}><Icone nome="externo" tam={14} />Abrir painel</button></div>
       </div>
+      {admin && dados.aparelhos && (
+        <div className="set set-coluna">
+          <div className="set-cab">
+            <div><b>Aparelhos conectados</b><p>{dados.aparelhos.length ? `${dados.aparelhos.length} sessão(ões) ativa(s).` : "Nenhum aparelho conectado agora."}</p></div>
+            {dados.aparelhos.length > 1 && <button className="btn perigo" onClick={() => desconectar(null)}>Desconectar todos</button>}
+          </div>
+          {dados.aparelhos.map((a) => (
+            <div className="cert-linha" key={a.id}>
+              <span className="av conta-av"><Icone nome="celular" tam={14} /></span>
+              <div className="cert-info"><b>{a.usuario} · {nomeAparelho(a.aparelho)}</b>
+                <span className="meta">{a.ip ?? "—"} · último uso {fmtDataHora(a.ultimo_uso)} · {a.lembrar ? "mantém conectado" : "até fechar o navegador"}</span></div>
+              <div className="cert-acoes"><button className="btn" onClick={() => desconectar(a)}>Desconectar</button></div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -340,7 +387,7 @@ function Aparencia({ escuro, onTema }: { escuro: boolean; onTema: (e: boolean) =
         </div>
       </div>
       <div className="set">
-        <div><b>Atalhos</b><p><span className="kbd">Ctrl K</span> comandos · <span className="kbd">Ctrl N</span> novo pedido · <span className="kbd">Ctrl 1</span>–<span className="kbd">8</span> telas · <span className="kbd">/</span> buscar · <span className="kbd">F5</span> recarregar · <span className="kbd">Del</span> excluir marcados</p></div>
+        <div><b>Atalhos</b><p><span className="kbd">Ctrl K</span> comandos · <span className="kbd">Ctrl N</span> novo pedido · <span className="kbd">Ctrl 1</span>–<span className="kbd">9</span> telas · <span className="kbd">/</span> buscar · <span className="kbd">F5</span> recarregar · <span className="kbd">Del</span> excluir marcados</p></div>
       </div>
     </div>
   );

@@ -84,7 +84,7 @@ def main() -> int:
         s = c.ok("POST", "/licenca/ativar", {"token": TOKEN_LIC})
         checar(s["situacao"] == "liberado", "token certo ativa")
         checar(TOKEN_LIC not in json.dumps(s), "resposta não traz o token completo")
-        uid = c.ok("POST", "/usuarios", {"username": "func9", "password": "Massa#77", "role": "common"})["id"]
+        uid = c.ok("POST", "/usuarios", {"username": "func9", "password": "Massa#77", "role": "recepcao"})["id"]
 
         print("Bloqueado = somente leitura")
         MODO["v"] = "bloqueado"

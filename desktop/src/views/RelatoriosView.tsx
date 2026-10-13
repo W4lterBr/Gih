@@ -10,7 +10,7 @@ type Tipo = "entregas" | "producao" | "fechamento";
 interface Rel { titulo: string; meta: string; colunas: string[]; linhas: (string | number)[][]; rodape: string; resumo?: { colunas: string[]; linhas: (string | number)[][] } }
 
 const ABAS: [Tipo, string, string][] = [
-  ["entregas", "Entregas do dia", "Pedidos pagos com entrega no dia, com endereço — para separar e entregar."],
+  ["entregas", "Entregas do dia", "Pedidos do dia (menos os cancelados), com endereço e pagamento — para separar e entregar."],
   ["fechamento", "Fechamento", "Quantidades por cliente e produto no período (valor pelo preço de cadastro)."],
   ["producao", "Produção e estoque", "Todas as entradas e saídas de estoque no período."],
 ];

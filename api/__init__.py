@@ -88,4 +88,4 @@ def resolver(metodo: str, caminho: str) -> tuple[Optional[_Rota], dict[str, str]
 
 def carregar_rotas() -> None:
     """Importa os módulos de rotas (cada um se registra ao ser importado)."""
-    from api import banco, cadastros, configuracoes, estoque, licenca, pedidos, producao, relatorios, sistema  # noqa: F401
+    from api import banco, cadastros, configuracoes, custos, estoque, licenca, pedidos, producao, relatorios, sistema  # noqa: F401

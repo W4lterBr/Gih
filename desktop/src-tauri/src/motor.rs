@@ -71,7 +71,9 @@ enum Motor {
 }
 
 fn localizar(pasta_recursos: Option<PathBuf>) -> Result<Motor, String> {
-    if std::env::var("CONFEITARIA_MOTOR_PYTHON").is_err() {
+    // Em desenvolvimento (debug) sempre o código atual: target/debug/motor pode ter um
+    // confeitaria-motor.exe velho de um build anterior, sem as rotas novas ("Rota desconhecida").
+    if !cfg!(debug_assertions) && std::env::var("CONFEITARIA_MOTOR_PYTHON").is_err() {
         if let Some(exe) = pasta_recursos.map(|p| p.join("motor").join("confeitaria-motor.exe")) {
             if exe.exists() {
                 return Ok(Motor::Empacotado(exe));

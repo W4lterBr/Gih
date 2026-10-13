@@ -73,8 +73,18 @@ const STATUS_CLS: Record<string, string> = {
   "Entregue": "st-entregue",
   "Cancelado": "st-cancelado",
 };
+/** Pagamento. Bancos antigos guardavam "Entregue"/"Cancelado" aqui — isso agora é a
+ *  situação (selo próprio), então não repete. */
 export function Status({ valor }: { valor: string }) {
+  if (["entregue", "cancelado", "completed", "cancelled", "concluído"].includes(valor.toLowerCase())) return null;
   return <span className={`pill ${STATUS_CLS[valor] ?? ""}`}>{valor}</span>;
+}
+
+/** Situação da entrega: só aparece quando não está "aberto". */
+export function Situacao({ valor }: { valor: string }) {
+  if (valor === "entregue") return <span className="pill st-entregue">Entregue</span>;
+  if (valor === "cancelado") return <span className="pill st-cancelado">Cancelado</span>;
+  return null;
 }
 
 export function Vazio({ icone = "info", titulo, texto, children }: { icone?: string; titulo: string; texto?: ReactNode; children?: ReactNode }) {

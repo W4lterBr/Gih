@@ -8,7 +8,7 @@ import shutil
 
 from api import ErroApi, Pedido, contexto, rota
 from api.util import agora, inteiro, linhas, texto
-from core.config import get_app_data_directory, get_web_panel_token
+from core.config import get_app_data_directory
 from core.security import hash_password
 
 EXTENSOES_LOGO = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".svg", ".webp")
@@ -16,7 +16,7 @@ EXTENSOES_LOGO = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".svg", ".webp")
 # ---------------------------------------------------------------- empresa
 
 
-@rota("PUT", "/empresa/nome")
+@rota("PUT", "/empresa/nome", admin=True)
 def salvar_nome(p: Pedido) -> dict:
     nome = texto(p.c("nome"))
     if not nome:
@@ -40,7 +40,7 @@ def salvar_dias_fechados(p: Pedido) -> dict:
     return {"ok": True, "dias_fechados": escolhidos}
 
 
-@rota("PUT", "/empresa/logo")
+@rota("PUT", "/empresa/logo", admin=True)
 def salvar_logo(p: Pedido) -> dict:
     """Copia a imagem escolhida para a pasta de dados do app (gravável mesmo com o app
     instalado em Arquivos de Programas) e registra o caminho no banco."""
@@ -64,7 +64,7 @@ def salvar_logo(p: Pedido) -> dict:
     return {"ok": True, "logo_path": destino}
 
 
-@rota("DELETE", "/empresa/logo")
+@rota("DELETE", "/empresa/logo", admin=True)
 def remover_logo(p: Pedido) -> dict:
     db = contexto.db()
     r = db.query("SELECT logo_path FROM company WHERE id=1")
@@ -84,25 +84,53 @@ def remover_logo(p: Pedido) -> dict:
 
 @rota("GET", "/painel-cozinha")
 def painel(p: Pedido) -> dict:
+    """Endereço do painel web. O acesso é com usuário e senha (perfis Administrador e
+    Cozinha). O administrador vê os aparelhos conectados."""
     from api.sistema import PORTA_COZINHA, ip_local
     ip = ip_local()
-    return {"url": f"http://{ip}:{PORTA_COZINHA}", "local": f"http://localhost:{PORTA_COZINHA}", "pin": get_web_panel_token()}
+    out = {"url": f"http://{ip}:{PORTA_COZINHA}", "local": f"http://localhost:{PORTA_COZINHA}"}
+    if (p.usuario or {}).get("role") == "admin":
+        import time
+        rows = contexto.db().query(
+            "SELECT s.id, u.username, s.lembrar, s.created_at, s.last_seen, s.expires_at, s.ip, s.agent "
+            "FROM web_sessions s JOIN users u ON u.id = s.user_id WHERE s.expires_at > ? ORDER BY s.last_seen DESC", (time.time(),))
+        out["aparelhos"] = [{
+            "id": r["id"], "usuario": r["username"], "lembrar": bool(r["lembrar"]), "entrou": r["created_at"],
+            "ultimo_uso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["last_seen"])), "ip": r["ip"], "aparelho": r["agent"],
+        } for r in rows]
+    return out
+
+
+@rota("POST", "/painel-cozinha/desconectar", admin=True)
+def desconectar_aparelho(p: Pedido) -> dict:
+    """Desconecta um aparelho do painel web (`id`) ou todos (`todos`)."""
+    db = contexto.db()
+    if p.c("todos"):
+        n = db.execute("DELETE FROM web_sessions").rowcount
+    else:
+        n = db.execute("DELETE FROM web_sessions WHERE id=?", (inteiro(p.c("id"), "id"),)).rowcount
+    return {"desconectados": n}
 
 
 # ---------------------------------------------------------------- usuários
 
-PAPEIS = ("admin", "common")
+from api.permissoes import PAPEIS_NOVOS, NOMES as NOMES_PAPEIS, nome as nome_papel, normalizar
+from api.util import auditar, diff
+from core.extended_database import encerrar_sessoes_web
 
 
 @rota("GET", "/usuarios", admin=True)
 def listar_usuarios(p: Pedido) -> dict:
-    return {"usuarios": linhas(contexto.db().query("SELECT id, username, role FROM users ORDER BY username"))}
+    rows = linhas(contexto.db().query("SELECT id, username, role FROM users ORDER BY username COLLATE NOCASE"))
+    for r in rows:
+        r["perfil"] = nome_papel(r["role"])
+    return {"usuarios": rows, "perfis": [{"role": k, "nome": NOMES_PAPEIS[k]} for k in PAPEIS_NOVOS]}
 
 
-def _validar(p: Pedido, novo: bool) -> tuple[str, str, str]:
+def _validar(p: Pedido, novo: bool, papel_atual: str | None = None) -> tuple[str, str, str]:
     nome = (p.c("username") or "").strip()
     senha = (p.c("password") or "")
-    papel = p.c("role") or "common"
+    papel = p.c("role") or ""
     if not nome:
         raise ErroApi("Nome de usuário é obrigatório")
     if len(nome) < 3:
@@ -114,8 +142,9 @@ def _validar(p: Pedido, novo: bool) -> tuple[str, str, str]:
         erro = problema_senha_nova(nome, senha)
         if erro:
             raise ErroApi(erro)
-    if papel not in PAPEIS:
-        raise ErroApi("Tipo de usuário inválido.")
+    # "common" (perfil antigo) só continua em quem já o tem; novos escolhem um dos 3.
+    if papel not in PAPEIS_NOVOS and not (papel_atual and papel == papel_atual and normalizar(papel) == "common"):
+        raise ErroApi("Escolha o perfil: Administrador, Recepção ou Cozinha.")
     return nome, senha, papel
 
 
@@ -133,6 +162,7 @@ def criar_usuario(p: Pedido) -> dict:
     if not h:
         raise ErroApi("Erro ao gerar hash da senha.")
     cur = db.execute("INSERT INTO users(username, password_hash, role) VALUES (?,?,?)", (nome, h, papel))
+    auditar(db, "user", cur.lastrowid, "create", f"username={nome},role={papel}")
     return {"id": cur.lastrowid}
 
 
@@ -143,7 +173,7 @@ def atualizar_usuario(p: Pedido) -> dict:
     r = db.query("SELECT username, role FROM users WHERE id=?", (uid,))
     if not r:
         raise ErroApi("Usuário não encontrado.", 404)
-    nome, senha, papel = _validar(p, False)
+    nome, senha, papel = _validar(p, False, r[0]["role"])
     if db.query("SELECT 1 FROM users WHERE LOWER(username)=LOWER(?) AND id!=?", (nome, uid)):
         raise ErroApi(f"Já existe um usuário com o nome '{nome}'.")
     if r[0]["role"] == "admin" and papel != "admin" and _admins(db) <= 1:
@@ -158,6 +188,9 @@ def atualizar_usuario(p: Pedido) -> dict:
         db.execute("UPDATE users SET username=?, password_hash=?, role=? WHERE id=?", (nome, h, papel, uid))
     else:
         db.execute("UPDATE users SET username=?, role=? WHERE id=?", (nome, papel, uid))
+    if senha or papel != r[0]["role"] or nome != r[0]["username"]:
+        encerrar_sessoes_web(db, uid)  # o painel web pede login de novo
+    auditar(db, "user", uid, "update", diff([("username", r[0]["username"], nome), ("role", r[0]["role"], papel)]) or ("senha trocada" if senha else None))
     if eu:
         contexto.definir_usuario({"id": uid, "username": nome, "role": papel})
     return {"ok": True}
@@ -174,7 +207,9 @@ def excluir_usuario(p: Pedido) -> dict:
         raise ErroApi("Você não pode excluir seu próprio usuário enquanto está logado com ele.")
     if r[0]["role"] == "admin" and _admins(db) <= 1:
         raise ErroApi("Este é o único administrador do sistema. Crie outro administrador antes de excluir este.")
+    encerrar_sessoes_web(db, uid)
     db.execute("DELETE FROM users WHERE id=?", (uid,))
+    auditar(db, "user", uid, "delete", f"username={r[0]['username']}")
     return {"ok": True}
 
 

@@ -49,7 +49,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from api import ErroApi, Pedido, carregar_rotas, resolver  # noqa: E402
-from api import contexto  # noqa: E402
+from api import contexto, permissoes  # noqa: E402
 from core import licenca  # noqa: E402
 
 TOKEN = os.environ.get("CONFEITARIA_TOKEN", "")
@@ -117,8 +117,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ErroApi("Faça login para continuar.", 401, "sem_login")
                 if (usuario or {}).get("trocar_senha") and url.path not in ROTAS_TROCA_SENHA:
                     raise ErroApi("Defina uma nova senha para continuar.", 403, "trocar_senha")
-                if rota.admin and (usuario or {}).get("role") != "admin":
-                    raise ErroApi("Apenas administradores podem fazer isso.", 403)
+                if not rota.publica and not permissoes.permitido((usuario or {}).get("role"), metodo, url.path, rota.admin):
+                    raise ErroApi("Apenas administradores podem fazer isso." if rota.admin
+                                  else "Seu perfil de usuário não tem acesso a isto. Fale com o administrador.", 403, "sem_permissao")
                 if rota.escreve and licenca.somente_leitura():
                     raise ErroApi("Licença DWM bloqueada: o sistema está em modo somente leitura até a fatura "
                                   "ser regularizada. Veja em Configurações → Licença DWM.", 423, "licenca_bloqueada")

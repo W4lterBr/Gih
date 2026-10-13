@@ -8,53 +8,56 @@ from datetime import datetime
 
 from api import ErroApi, Pedido, contexto, rota
 from api.pedidos import _logo_empresa, separar_lote
-from api.util import data_iso, hoje_iso
+from api.util import data_iso, hoje_iso, qtd_texto
 
 
 def _entregas(dia: str) -> dict:
     rows = contexto.db().query("""
-        SELECT c.name AS cliente, o.quantity AS quantidade, p.name AS produto, c.address AS endereco,
+        SELECT c.name AS cliente, o.quantity AS quantidade, p.unit, p.name AS produto, c.address AS endereco,
                c.phone AS telefone, o.notes, o.status, COALESCE(o.label,'Comum') AS etiqueta
         FROM orders o JOIN customers c ON c.id = o.customer_id JOIN products p ON p.id = o.product_id
-        WHERE DATE(o.delivery_date) = ? AND o.status = 'Pago'
+        WHERE DATE(o.delivery_date) = ? AND COALESCE(o.situacao, 'aberto') != 'cancelado'
         ORDER BY c.name
     """, (dia,))
+    # Todos os pedidos do dia que não foram cancelados: "Pagamento na Retirada" e
+    # "Aguardando" também são entregues (antes só os pagos entravam). O pagamento vai
+    # numa coluna para o entregador saber o que cobrar.
     linhas = [{**dict(r), "obs": separar_lote(r["notes"])[2]} for r in rows]
     return {
         "titulo": "Relatório de Entregas",
-        "meta": f"Dia: {datetime.fromisoformat(dia).strftime('%d/%m/%Y')} | Status: Pago",
-        "colunas": ["Cliente", "Quantidade", "Produto", "Endereço", "Observação"],
-        "linhas": [[x["cliente"], x["quantidade"], x["produto"], x["endereco"] or "", x["obs"] or ""] for x in linhas],
-        "rodape": f"Total itens: {sum(x['quantidade'] for x in linhas)} | Pedidos: {len(linhas)}",
+        "meta": f"Dia: {datetime.fromisoformat(dia).strftime('%d/%m/%Y')} | Pedidos não cancelados",
+        "colunas": ["Cliente", "Quantidade", "Produto", "Endereço", "Pagamento", "Observação"],
+        "linhas": [[x["cliente"], qtd_texto(x["quantidade"], x["unit"]), x["produto"], x["endereco"] or "", x["status"], x["obs"] or ""] for x in linhas],
+        "rodape": f"Total: {_total_misto(linhas, 'quantidade')} | Itens: {len(linhas)}",
     }
 
 
 def _producao(de: str, ate: str) -> dict:
     rows = contexto.db().query("""
-        SELECT sm.created_at AS data, p.name AS produto, sm.type AS tipo, sm.category AS categoria,
+        SELECT sm.created_at AS data, p.name AS produto, p.unit, sm.type AS tipo, sm.category AS categoria,
                sm.quantity AS quantidade, sm.reason AS motivo
         FROM stock_movements sm JOIN products p ON p.id = sm.product_id
         WHERE DATE(sm.created_at) BETWEEN ? AND ?
         ORDER BY sm.created_at DESC
     """, (de, ate))
-    entradas = sum(r["quantidade"] for r in rows if r["tipo"] == "entrada")
-    saidas = sum(r["quantidade"] for r in rows if r["tipo"] == "saida")
+    entradas = _total_misto([r for r in rows if r["tipo"] == "entrada"], "quantidade")
+    saidas = _total_misto([r for r in rows if r["tipo"] == "saida"], "quantidade")
     return {
         "titulo": "Relatório de Produção",
         "meta": f"Período: {_br(de)} a {_br(ate)}",
         "colunas": ["Data", "Produto", "Tipo", "Categoria", "Quantidade", "Motivo"],
         "linhas": [[_br(r["data"][:10]), r["produto"], "Entrada" if r["tipo"] == "entrada" else "Saída",
-                    r["categoria"] or "", r["quantidade"], r["motivo"] or ""] for r in rows],
-        "rodape": f"Entradas: {entradas} | Saídas: {saidas} | Saldo: {entradas - saidas}",
+                    r["categoria"] or "", qtd_texto(r["quantidade"], r["unit"]), r["motivo"] or ""] for r in rows],
+        "rodape": f"Entradas: {entradas} | Saídas: {saidas}",
     }
 
 
 def _fechamento(de: str, ate: str, etiqueta: str) -> dict:
     sql = """
-        SELECT c.name AS cliente, COALESCE(o.label,'Comum') AS etiqueta, p.name AS produto,
+        SELECT c.name AS cliente, COALESCE(o.label,'Comum') AS etiqueta, p.name AS produto, p.unit,
                DATE(o.delivery_date) AS data, o.quantity AS quantidade, o.quantity * COALESCE(p.price,0) AS valor
         FROM orders o JOIN customers c ON c.id=o.customer_id JOIN products p ON p.id=o.product_id
-        WHERE DATE(o.delivery_date) BETWEEN ? AND ?"""
+        WHERE DATE(o.delivery_date) BETWEEN ? AND ? AND COALESCE(o.situacao, 'aberto') != 'cancelado'"""
     params: list = [de, ate]
     if etiqueta:
         sql += " AND LOWER(COALESCE(o.label,'Comum')) = LOWER(?)"
@@ -63,18 +66,19 @@ def _fechamento(de: str, ate: str, etiqueta: str) -> dict:
     grupos: OrderedDict = OrderedDict()
     for r in rows:
         k = (r["cliente"], r["etiqueta"], r["produto"])
-        g = grupos.setdefault(k, {"data": r["data"], "quantidade": 0, "valor": 0.0})
+        g = grupos.setdefault(k, {"data": r["data"], "quantidade": 0, "valor": 0.0, "unit": r["unit"]})
         g["quantidade"] += r["quantidade"]
         g["valor"] += r["valor"] or 0
-    linhas = [[k[0], k[1], k[2], _br(g["data"]), g["quantidade"], _moeda(g["valor"])] for k, g in sorted(grupos.items())]
+    linhas = [[k[0], k[1], k[2], _br(g["data"]), qtd_texto(round(g["quantidade"], 3), g["unit"]), _moeda(g["valor"])]
+              for k, g in sorted(grupos.items())]
     resumo: OrderedDict = OrderedDict()
     for (cli, eti, _), g in sorted(grupos.items()):
-        s = resumo.setdefault((cli, eti), [0, 0, 0.0])
+        s = resumo.setdefault((cli, eti), [0, [], 0.0])
         s[0] += 1
-        s[1] += g["quantidade"]
+        s[1].append({"quantidade": g["quantidade"], "unit": g["unit"]})
         s[2] += g["valor"]
     clientes = {k[0] for k in grupos}
-    total_qtd = sum(g["quantidade"] for g in grupos.values())
+    total_qtd = _total_misto(list(grupos.values()), "quantidade")
     total_valor = sum(g["valor"] for g in grupos.values())
     return {
         "titulo": "Relatório de Fechamento",
@@ -83,8 +87,20 @@ def _fechamento(de: str, ate: str, etiqueta: str) -> dict:
         "linhas": linhas,
         "rodape": f"Clientes: {len(clientes)} | Itens: {len(linhas)} | Quantidade: {total_qtd} | Valor: {_moeda(total_valor)}",
         "resumo": {"colunas": ["Cliente", "Etiqueta", "Produtos", "Quantidade", "Valor"],
-                   "linhas": [[c, e, s[0], s[1], _moeda(s[2])] for (c, e), s in resumo.items()]},
+                   "linhas": [[c, e, s[0], _total_misto(s[1], "quantidade"), _moeda(s[2])] for (c, e), s in resumo.items()]},
     }
+
+
+def _total_misto(linhas, campo: str) -> str:
+    """Soma separada por unidade: "12 un + 3,5 kg" (somar unidades com quilos não faz sentido)."""
+    un = sum(int(x[campo] or 0) for x in linhas if (x["unit"] or "un") != "kg")
+    kg = round(sum(float(x[campo] or 0) for x in linhas if x["unit"] == "kg"), 3)
+    partes = []
+    if un or not kg:
+        partes.append(f"{un} un")
+    if kg:
+        partes.append(qtd_texto(kg, "kg"))
+    return " + ".join(partes)
 
 
 def _br(iso: str) -> str:

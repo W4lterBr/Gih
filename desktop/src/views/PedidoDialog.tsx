@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../contexto";
 import type { Cliente, Etiqueta, PedidoDetalhe, Produto } from "../types";
-import { diaFechado, diaSemana, fmtTamanho, isoLocal, NOMES_DIAS, somarDias } from "../format";
+import { diaFechado, diaSemana, fmtQtd, fmtTamanho, isoLocal, lerQtd, NOMES_DIAS, somarDias } from "../format";
 import { Campo, Modal } from "../components/ui";
 import { Combo } from "../components/Combo";
 import { Icone } from "../components/Icone";
 
 export const STATUS = ["Aguardando Pagamento", "Pagamento na Retirada", "Pago"];
 
-interface ItemForm { chave: number; id?: number; product_id: number | null; quantity: number }
+/** quantity como texto: produto em kg aceita "1,5". */
+interface ItemForm { chave: number; id?: number; product_id: number | null; quantity: string }
 
 /** Próximo dia com expediente (pula os dias sem expediente da confeitaria). */
 function proximoUtil(iso: string, fechados: number[] | undefined) {
@@ -39,7 +40,7 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
   const [etiqueta, setEtiqueta] = useState(editar?.label ?? "Comum");
   const [obs, setObs] = useState(editar?.obs ?? "");
   const [itens, setItens] = useState<ItemForm[]>(
-    editar ? editar.itens.map((i, k) => ({ chave: k, id: i.id, product_id: i.product_id, quantity: i.quantity })) : [{ chave: 0, product_id: null, quantity: 1 }],
+    editar ? editar.itens.map((i, k) => ({ chave: k, id: i.id, product_id: i.product_id, quantity: String(i.quantity).replace(".", ",") })) : [{ chave: 0, product_id: null, quantity: "1" }],
   );
   const [erro, setErro] = useState("");
   const [salvando, setSalvando] = useState(false);
@@ -54,36 +55,42 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
   }, [toast]);
 
   const opClientes = useMemo(() => clientes.map((c) => ({ id: c.id, rotulo: c.name, detalhe: c.phone ?? undefined })), [clientes]);
-  const opProdutos = useMemo(() => produtos.map((p) => ({ id: p.id, rotulo: p.name, detalhe: `${p.stock} em estoque${p.size ? ` · ${fmtTamanho(p.size)}` : ""}` })), [produtos]);
+  const opProdutos = useMemo(() => produtos.map((p) => ({ id: p.id, rotulo: p.name, detalhe: `${fmtQtd(p.stock, p.unit, true)} em estoque${p.unit === "kg" ? " · por kg" : ""}${p.size ? ` · ${fmtTamanho(p.size)}` : ""}` })), [produtos]);
   const prodPorId = useMemo(() => new Map(produtos.map((p) => [p.id, p])), [produtos]);
   const statusOpcoes = STATUS.includes(status) ? STATUS : [...STATUS, status];
   // Pedido existente que já estava num dia fechado pode ser salvo sem mudar a data.
   const fechado = diaFechado(entrega, fechados) && entrega !== editar?.delivery_date?.slice(0, 10);
   const avisoFechado = fechado ? `${NOMES_DIAS[diaSemana(entrega)]} não há expediente.` : null;
-  const total = itens.reduce((s, i) => s + (i.product_id ? i.quantity : 0), 0);
+  const total = itens.filter((i) => i.product_id).length;
 
   const mudarItem = (chave: number, campo: Partial<ItemForm>) => setItens((l) => l.map((i) => (i.chave === chave ? { ...i, ...campo } : i)));
-  const adicionarItem = () => setItens((l) => [...l, { chave: Math.max(0, ...l.map((i) => i.chave)) + 1, product_id: null, quantity: 1 }]);
+  const adicionarItem = () => setItens((l) => [...l, { chave: Math.max(0, ...l.map((i) => i.chave)) + 1, product_id: null, quantity: "1" }]);
 
   const salvar = async () => {
     const validos = itens.filter((i) => i.product_id);
     if (!cliente) { setErro("Selecione um cliente."); return; }
     if (!validos.length) { setErro("Adicione pelo menos um produto ao pedido."); return; }
-    if (validos.some((i) => !i.quantity || i.quantity < 1)) { setErro("A quantidade deve ser maior que zero."); return; }
+    for (const i of validos) {
+      const q = lerQtd(i.quantity);
+      const kg = prodPorId.get(i.product_id!)?.unit === "kg";
+      if (!Number.isFinite(q) || q <= 0) { setErro("A quantidade deve ser maior que zero."); return; }
+      if (!kg && !Number.isInteger(q)) { setErro(`${prodPorId.get(i.product_id!)?.name ?? "Produto"} é vendido por unidade: use número inteiro.`); return; }
+    }
     if (fechado) { setErro(`${avisoFechado} Pedido negado.`); return; }
+    if (entrega < isoLocal() && entrega !== editar?.delivery_date?.slice(0, 10)) { setErro("A data de entrega já passou. Escolha hoje ou uma data futura."); return; }
     setErro("");
     setSalvando(true);
     try {
       if (editar) {
         await api.post("/pedidos/editar", {
           customer_id: cliente, delivery_date: entrega, status, label: etiqueta, notes: obs,
-          itens: validos.map((i) => ({ id: i.id, product_id: i.product_id, quantity: i.quantity })),
+          itens: validos.map((i) => ({ id: i.id, product_id: i.product_id, quantity: lerQtd(i.quantity) })),
         });
         onSalvo("Pedido atualizado.");
       } else {
         const r = await api.post<{ ids: number[] }>("/pedidos", {
           customer_id: cliente, delivery_date: entrega, status, label: etiqueta, notes: obs,
-          products: validos.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
+          products: validos.map((i) => ({ product_id: i.product_id, quantity: lerQtd(i.quantity) })),
         });
         onSalvo(r.ids.length > 1 ? `Pedido criado com ${r.ids.length} produtos.` : "Pedido criado.");
       }
@@ -106,7 +113,7 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
   return (
     <Modal titulo={editar ? `Editar pedido #${editar.id}` : "Novo pedido"} onClose={onClose} largura={720} aoEnviar={salvar}
       rodape={<>
-        <span className="rodape-info">{total} {total === 1 ? "item" : "itens"} · <span className="kbd">Ctrl Enter</span> salva</span>
+        <span className="rodape-info">{total} {total === 1 ? "produto" : "produtos"} · <span className="kbd">Ctrl Enter</span> salva</span>
         <button type="button" className="btn" onClick={onClose}>Cancelar</button>
         <button type="submit" className="btn primary" disabled={salvando}>{salvando ? "Salvando…" : editar ? "Salvar alterações" : "Criar pedido"}</button>
       </>}>
@@ -117,7 +124,8 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
         </Campo>
         <Campo rotulo="Entrega" erro={avisoFechado}>
           <div className="linha-data">
-            <input type="date" value={entrega} onChange={(e) => setEntrega(e.target.value)} required />
+            <input type="date" value={entrega} onChange={(e) => setEntrega(e.target.value)} required
+              min={editar && entrega === editar.delivery_date?.slice(0, 10) ? undefined : isoLocal()} />
             {rapidas.map(([r, d]) => (
               <button type="button" key={r} className="chip mini" aria-pressed={entrega === d} disabled={diaFechado(d, fechados)} onClick={() => setEntrega(d)}>{r}</button>
             ))}
@@ -151,10 +159,13 @@ export function PedidoDialog({ editar, clienteFixo, onClose, onSalvo }: {
               <span className="item-n">{n + 1}</span>
               <Combo opcoes={opProdutos} valor={i.product_id} onChange={(id) => mudarItem(i.chave, { product_id: id })}
                 placeholder="Produto…" autoFocus={!editar && n > 0 && !i.product_id} />
-              <input className="qtd" type="number" min={1} max={1000000} value={i.quantity}
-                onChange={(e) => mudarItem(i.chave, { quantity: Number(e.target.value) })} aria-label="Quantidade" />
-              <span className={`item-estoque${p && p.stock - i.quantity < 0 ? " ruim" : ""}`}>
-                {p ? `${p.stock} em estoque` : ""}
+              <span className="qtd-campo">
+                <input className="qtd" inputMode={p?.unit === "kg" ? "decimal" : "numeric"} value={i.quantity}
+                  onChange={(e) => mudarItem(i.chave, { quantity: e.target.value })} aria-label={p?.unit === "kg" ? "Quantidade em kg" : "Quantidade"} />
+                {p?.unit === "kg" && <span className="sufixo">kg</span>}
+              </span>
+              <span className={`item-estoque${p && p.stock - (lerQtd(i.quantity) || 0) < 0 ? " ruim" : ""}`}>
+                {p ? `${fmtQtd(p.stock, p.unit, true)} em estoque` : ""}
               </span>
               {!editar && itens.length > 1
                 ? <button type="button" className="icone-btn" onClick={() => setItens((l) => l.filter((x) => x.chave !== i.chave))} aria-label="Remover produto"><Icone nome="lixo" tam={14} /></button>

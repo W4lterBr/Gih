@@ -268,3 +268,103 @@ input[type="date"] { color-scheme: light dark; }
 .backups-ausente { display: grid; gap: 4px; justify-items: start; }
 .backups-ausente .link { font-size: 12.5px; text-align: left; }
 .dias-semana { flex-wrap: wrap; gap: 6px; }
+
+/* Situação do pedido (entregue / cancelado) */
+.pills { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pill.st-entregue { background: var(--ok-soft); color: var(--ok); }
+.pill.st-cancelado { background: var(--surface-2); color: var(--text-3); text-decoration: line-through; }
+.lrow.linha-cancelada { opacity: .55; }
+.lrow.linha-cancelada b { text-decoration: line-through; }
+.lrow.linha-entregue { opacity: .8; }
+.linha-acoes { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* Quantidade em kg no pedido */
+.qtd-campo { position: relative; display: inline-flex; align-items: center; }
+.qtd-campo .sufixo { position: absolute; right: 8px; font-size: 12px; color: var(--text-3); pointer-events: none; }
+.qtd-campo .qtd { padding-right: 26px; }
+
+/* Custos */
+.b-normal { font-weight: 400 !important; }
+.who .pend-ic, .pend-ic { display: inline-flex !important; vertical-align: -2px; margin-left: 6px; color: var(--warn); font: inherit !important; }
+.lrow.linha-alerta > div:last-child { font-weight: 600; }
+.campo-un { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 6px; }
+.previa-compra { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); border: 1px dashed var(--line-strong); color: var(--text-2); font-size: 12.5px; }
+.previa-compra b { color: var(--brand); font-weight: 600; }
+.bloco-compra { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 8px; }
+.nota-topo { margin: 0; color: var(--text-2); font-size: 12.5px; }
+.nota-mini { margin: 0; color: var(--text-3); font-size: 11.5px; line-height: 1.45; }
+.kpi-texto { font-size: 13px; font-weight: 600; white-space: normal; }
+.kpi strong small { font-size: 12px; font-weight: 500; margin-left: 2px; }
+
+.tabela-simples { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.ts-cab, .ts-linha { display: grid; gap: 10px; align-items: center; padding: 7px 12px; }
+.ts-cab { background: var(--surface-2); font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.ts-linha { border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.ts-linha small { font-size: 11px; }
+.ts-compras { grid-template-columns: 90px minmax(0, 1fr) minmax(0, 1fr) 90px 150px 28px; }
+.ts-compras .sutil-sans { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-vazio { padding: 18px; text-align: center; color: var(--text-3); border-top: 1px solid var(--line); }
+
+/* Editor de receita: formulário à esquerda, contas à direita */
+.receita-grade { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.receita-form { display: grid; gap: 14px; min-width: 0; }
+.receita-resumo { position: sticky; top: 0; display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.receita-resumo .sect-t { margin: 6px 0 0; }
+.receita-resumo .sect-t:first-child { margin-top: 0; }
+.item-rec { display: grid; grid-template-columns: 22px minmax(0, 1fr) 84px 82px 112px 28px; gap: 8px; align-items: center; }
+.item-rec .qtd { height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 8px; background: var(--surface); color: var(--text); text-align: right; width: 100%; font: inherit; }
+.item-rec select.ctl { padding: 0 6px; }
+.item-rec-cab { font-size: 11px; color: var(--text-3); font-weight: 600; margin-bottom: -4px; }
+.item-custo { display: grid; justify-items: end; line-height: 1.15; }
+.item-custo small { font-size: 10.5px; }
+.item-rec.com-pend .qtd { border-color: var(--warn); }
+.item-pend { grid-column: 2 / -1; margin-top: -4px; color: var(--warn); font-size: 11.5px; }
+.contas { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 0; font-variant-numeric: tabular-nums; }
+.contas dt { color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.contas dd { margin: 0; text-align: right; }
+.contas .total { border-top: 1px solid var(--line-strong); padding-top: 5px; font-weight: 700; color: var(--text); }
+.contas.compacto { font-size: 12px; gap: 3px 10px; }
+.contas.compacto small { font-size: 10.5px; }
+.custo-un { display: grid; gap: 1px; padding: 10px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+.custo-un span { font-size: 11.5px; color: var(--text-2); }
+.custo-un b { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.preco-sug { display: grid; gap: 1px; }
+.preco-sug b { font-size: 24px; font-weight: 800; color: var(--brand); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.preco-sug.pequeno b { font-size: 17px; color: var(--text); }
+.preco-sug span { font-size: 12px; }
+.btn.largo { width: 100%; justify-content: center; }
+.teste-preco { height: 34px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 10px; background: var(--surface); color: var(--text); font: inherit; width: 100%; }
+.barra-preco { display: grid; gap: 8px; }
+.bp-barra { display: flex; height: 10px; border-radius: 99px; overflow: hidden; background: var(--surface); border: 1px solid var(--line); }
+.bp-barra i { display: block; height: 100%; }
+.bp-cor { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pendencias { padding: 10px 12px; border-radius: 8px; background: var(--warn-soft, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); font-size: 12px; }
+.pendencias b { display: flex; align-items: center; gap: 6px; color: var(--warn); }
+.pendencias ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); display: grid; gap: 2px; }
+
+/* Parâmetros */
+.parametros { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); gap: 14px; padding: 0 20px 20px; align-items: start; overflow-y: auto; min-height: 0; }
+.parametros form { display: grid; gap: 12px; }
+.parametros .sect-t { margin: 0; }
+.acoes-form { display: flex; justify-content: flex-end; }
+.explica { display: grid; gap: 8px; }
+.explica p { margin: 0; color: var(--text-2); line-height: 1.5; }
+.explica p b { color: var(--text); }
+.exemplo { padding: 10px 12px; border-radius: 8px; background: var(--brand-soft); color: var(--text); line-height: 1.5; }
+.exemplo.ruim { background: var(--bad-soft); color: var(--bad); }
+
+@media (max-width: 980px) {
+  .receita-grade, .parametros { grid-template-columns: 1fr; }
+  .receita-resumo { position: static; }
+}
+
+.set-coluna { display: grid !important; gap: 8px; }
+.set-cab { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+
+/* Perfis de usuário */
+.perfis { display: grid; gap: 6px; }
+.perfil-opcao { display: grid; gap: 2px; text-align: left; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); }
+.perfil-opcao span { font-size: 11.5px; color: var(--text-3); }
+.perfil-opcao[aria-pressed="true"] { border-color: var(--brand); background: var(--brand-soft); }
+.perfil-opcao[aria-pressed="true"] b { color: var(--brand); }
+.editavel:disabled { cursor: default; }

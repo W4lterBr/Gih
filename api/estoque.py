@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from api import ErroApi, Pedido, contexto, rota
-from api.util import agora, auditar, data_iso, diff, ids, inteiro, linhas, texto
+from api.util import UNIDADES, agora, auditar, data_iso, diff, ids, inteiro, like, linhas, qtd_texto, quantidade, texto, unidade_de
 from core.stock_categories import MOVEMENT_CATEGORIES, MOVEMENT_CATEGORY_COLORS
 
 # ---------------------------------------------------------------- produtos
@@ -19,8 +20,8 @@ def listar_produtos(p: Pedido) -> dict:
     termo = p.q("q").strip()
     ordem = "(stock <= 0), name" if p.q("ordem") == "pronta" else "name"
     if termo:
-        like = f"%{termo}%"
-        rows = db.query(f"SELECT * FROM products WHERE name LIKE ? OR description LIKE ? ORDER BY {ordem}", (like, like))
+        t = like(termo)
+        rows = db.query(f"SELECT * FROM products WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' ORDER BY {ordem}", (t, t))
     else:
         rows = db.query(f"SELECT * FROM products ORDER BY {ordem}")
     return {"produtos": linhas(rows)}
@@ -29,7 +30,7 @@ def listar_produtos(p: Pedido) -> dict:
 @rota("GET", "/produtos/estoque-baixo")
 def estoque_baixo(p: Pedido) -> dict:
     rows = contexto.db().query(
-        "SELECT id, name, stock, min_stock FROM products WHERE stock <= min_stock AND min_stock > 0 ORDER BY name"
+        "SELECT id, name, stock, min_stock, unit FROM products WHERE stock <= min_stock AND min_stock > 0 ORDER BY name"
     )
     return {"produtos": linhas(rows)}
 
@@ -48,26 +49,32 @@ def _campos_produto(p: Pedido) -> dict:
         raise ErroApi("Preço inválido.")
     if preco < 0 or preco > 999999.99:
         raise ErroApi("Preço inválido.")
+    unidade = str(p.c("unit") or "un")
+    if unidade not in UNIDADES:
+        raise ErroApi("Unidade inválida.")
     return {
         "name": nome,
         "description": texto(p.c("description")),
         "sizes": tamanhos,
-        "stock": inteiro(p.c("stock", 0), "Estoque", 0, 1_000_000),
-        "min_stock": inteiro(p.c("min_stock", 0), "Estoque mínimo", 0, 100_000),
+        "unit": unidade,
+        # Produto em kg: estoque em quilos com até 3 casas; preço é por kg.
+        "stock": quantidade(p.c("stock", 0), "Estoque", unidade, 0, 1_000_000),
+        "min_stock": quantidade(p.c("min_stock", 0), "Estoque mínimo", unidade, 0, 100_000),
         "price": preco,
     }
 
 
 def _nome_variante(nome: str, tamanho: str) -> str:
-    # "15" -> "Bolo 15cm"; quem já digitou "15 cm"/"15cm" não ganha "cm" duplicado.
+    # Só número ganha "cm": "15" -> "Bolo 15cm". "15 cm", "P", "G", "1kg" ficam como
+    # digitados (antes "P" virava "Bolo Pcm").
     t = tamanho.strip()
-    return f"{nome} {t}" if t.lower().endswith("cm") else f"{nome} {t}cm"
+    return f"{nome} {t}cm" if re.fullmatch(r"\d+([.,]\d+)?", t) else f"{nome} {t}"
 
 
 def _inserir_produto(db, nome: str, f: dict, tamanho, detalhe_preco: bool) -> int:
     cur = db.execute(
-        "INSERT INTO products(name, description, size, stock, min_stock, price) VALUES (?,?,?,?,?,?)",
-        (nome, f["description"], tamanho, f["stock"], f["min_stock"], f["price"]),
+        "INSERT INTO products(name, description, size, stock, min_stock, price, unit) VALUES (?,?,?,?,?,?,?)",
+        (nome, f["description"], tamanho, f["stock"], f["min_stock"], f["price"], f["unit"]),
     )
     novo = cur.lastrowid
     if f["stock"] > 0:
@@ -75,7 +82,7 @@ def _inserir_produto(db, nome: str, f: dict, tamanho, detalhe_preco: bool) -> in
             "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
             (novo, "entrada", "Ajuste de Inventário", f["stock"], "Cadastro inicial", None, agora(), db.current_user or "unknown"),
         )
-    det = f"name={nome},stock={f['stock']}" + (f",price={f['price']}" if detalhe_preco else "")
+    det = f"name={nome},stock={qtd_texto(f['stock'], f['unit'])}" + (f",price={f['price']}" if detalhe_preco else "")
     auditar(db, "product", novo, "create", det)
     return novo
 
@@ -97,8 +104,14 @@ def criar_produto(p: Pedido) -> dict:
 
 @rota("PUT", "/produtos/{id}")
 def atualizar_produto(p: Pedido) -> dict:
-    """Edita; com vários tamanhos o atual fica com o 1º e os demais viram produtos novos.
-    Mudança de estoque gera movimentação 'Ajuste de Inventário'."""
+    """Edita; com vários tamanhos o atual fica com o 1º e os demais viram produtos novos
+    (começando com estoque 0: o estoque digitado é o deste produto, não de cada um).
+    Mudança de estoque gera movimentação 'Ajuste de Inventário'.
+
+    `estoque_lido`: o estoque que a tela mostrava ao abrir. Se a pessoa não mexeu no
+    campo, o estoque atual do banco é mantido (o painel da cozinha pode ter lançado
+    produção nesse meio tempo — antes, salvar só o preço desfazia esse lançamento). Se
+    mexeu e o estoque mudou por fora, recusa em vez de sobrescrever."""
     db = contexto.db()
     pid = p.id()
     r = db.query("SELECT * FROM products WHERE id=?", (pid,))
@@ -106,6 +119,21 @@ def atualizar_produto(p: Pedido) -> dict:
         raise ErroApi("Produto não encontrado.", 404)
     a = r[0]
     f = _campos_produto(p)
+    unidade_antes = a["unit"] or "un"
+    if f["unit"] != unidade_antes and db.query("SELECT 1 FROM orders WHERE product_id=? LIMIT 1", (pid,)):
+        raise ErroApi("Este produto já tem pedidos: a unidade (un/kg) não pode mudar, senão as quantidades "
+                      "antigas mudariam de sentido. Cadastre um produto novo na outra unidade.", 400, "unidade_fixa")
+    atual = a["stock"] or 0
+    if "estoque_lido" in p.corpo:
+        try:
+            lido = round(float(p.c("estoque_lido")), 3)
+        except (TypeError, ValueError):
+            raise ErroApi("Valor inválido em 'estoque_lido'.")
+        if f["stock"] == lido:
+            f["stock"] = atual
+        elif atual != lido:
+            raise ErroApi(f"O estoque deste produto mudou para {atual} enquanto a tela estava aberta "
+                          "(provavelmente pelo painel da cozinha). Feche e abra o produto de novo.", 409, "estoque_mudou")
     novos = []
     with db.transaction():
         if len(f["sizes"]) > 1:
@@ -113,20 +141,21 @@ def atualizar_produto(p: Pedido) -> dict:
         else:
             nome_atual, tamanho_atual = f["name"], (f["sizes"][0] if f["sizes"] else None)
         db.execute(
-            "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=? WHERE id=?",
-            (nome_atual, f["description"], tamanho_atual, f["stock"], f["min_stock"], f["price"], pid),
+            "UPDATE products SET name=?, description=?, size=?, stock=?, min_stock=?, price=?, unit=? WHERE id=?",
+            (nome_atual, f["description"], tamanho_atual, f["stock"], f["min_stock"], f["price"], f["unit"], pid),
         )
-        delta = f["stock"] - int(a["stock"] or 0)
+        delta = round(f["stock"] - (a["stock"] or 0), 3)
         if delta:
             db.execute(
                 "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
                 (pid, "entrada" if delta > 0 else "saida", "Ajuste de Inventário", abs(delta), "Edição de produto", None, agora(), db.current_user or "unknown"),
             )
         for t in f["sizes"][1:]:
-            novos.append(_inserir_produto(db, _nome_variante(f["name"], t), f, t, True))
+            novos.append(_inserir_produto(db, _nome_variante(f["name"], t), {**f, "stock": 0}, t, True))
         partes = [
             diff([("name", a["name"], nome_atual), ("description", a["description"], f["description"])]),
             diff([("stock", a["stock"], f["stock"]), ("min_stock", a["min_stock"], f["min_stock"])], aspas=False),
+            diff([("unit", unidade_antes, f["unit"])]),
         ]
         auditar(db, "product", pid, "update", "; ".join(x for x in partes if x) or None)
     return {"ok": True, "novos": novos}
@@ -172,8 +201,8 @@ def _where_movimentos(p: Pedido) -> tuple[str, tuple]:
     params: tuple = ()
     termo = p.q("q").strip()
     if termo:
-        partes.append("p.name LIKE ?")
-        params = (f"%{termo}%",)
+        partes.append("p.name LIKE ? ESCAPE '\\'")
+        params = (like(termo),)
     return " AND ".join(partes), params
 
 
@@ -183,7 +212,7 @@ def listar_movimentos(p: Pedido) -> dict:
     where, params = _where_movimentos(p)
     rows = db.query(f"""
         SELECT sm.id, sm.type, sm.category, sm.quantity, sm.reason,
-               sm.created_at, sm.created_by, sm.order_id, sm.product_id, p.name AS product_name
+               sm.created_at, sm.created_by, sm.order_id, sm.product_id, p.name AS product_name, p.unit
         FROM stock_movements sm
         JOIN products p ON p.id = sm.product_id
         WHERE {where}
@@ -221,47 +250,58 @@ def criar_movimento(p: Pedido) -> dict:
     if categoria not in MOVEMENT_CATEGORIES["Entrada" if tipo == "entrada" else "Saída"]:
         raise ErroApi("Categoria inválida.")
     pid = inteiro(p.c("product_id"), "Produto", 1)
-    qtd = inteiro(p.c("quantity"), "Quantidade", 1, 999_999)
+    qtd = quantidade(p.c("quantity"), "Quantidade", unidade_de(db, pid), 1, 999_999)
     dia = data_iso(p.c("date") or datetime.now().date().isoformat(), "Data")
     if dia > datetime.now().date().isoformat():
         raise ErroApi("A data da movimentação não pode ser futura.")
-    prod = db.query("SELECT name, stock FROM products WHERE id=?", (pid,))
+    prod = db.query("SELECT name, stock, unit FROM products WHERE id=?", (pid,))
     if not prod:
         raise ErroApi("Cadastre um produto antes de registrar uma movimentação.")
     quando = f"{dia} {datetime.now().strftime('%H:%M:%S')}"
     with db.transaction():
         if tipo == "entrada":
-            db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (qtd, pid))
+            db.execute("UPDATE products SET stock = ROUND(stock + ?, 3) WHERE id=?", (qtd, pid))
         else:
-            cur = db.execute("UPDATE products SET stock = stock - ? WHERE id=? AND stock >= ?", (qtd, pid, qtd))
+            cur = db.execute("UPDATE products SET stock = ROUND(stock - ?, 3) WHERE id=? AND stock >= ?", (qtd, pid, qtd))
             if cur.rowcount == 0:
                 disp = db.query("SELECT stock FROM products WHERE id=?", (pid,))[0]["stock"]
-                raise ErroApi(f"Estoque disponível: {disp} un. Não é possível dar saída de {qtd} un.", 409, "estoque_insuficiente")
+                u = prod[0]["unit"]
+                raise ErroApi(f"Estoque disponível: {qtd_texto(disp, u)}{'' if u == 'kg' else ' un'}. "
+                              f"Não é possível dar saída de {qtd_texto(qtd, u)}{'' if u == 'kg' else ' un'}.", 409, "estoque_insuficiente")
         cur = db.execute(
             "INSERT INTO stock_movements(product_id, type, category, quantity, reason, order_id, created_at, created_by) VALUES (?,?,?,?,?,?,?,?)",
             (pid, tipo, categoria, qtd, texto(p.c("notes")), None, quando, db.current_user or "unknown"),
         )
         mid = cur.lastrowid
-        auditar(db, "stock_movement", mid, "create", f"{tipo} | {categoria} | produto={prod[0]['name']} | qtd={qtd}")
+        auditar(db, "stock_movement", mid, "create", f"{tipo} | {categoria} | produto={prod[0]['name']} | qtd={qtd_texto(qtd, prod[0]['unit'])}")
     return {"id": mid, "produto": prod[0]["name"]}
 
 
 @rota("POST", "/movimentos/excluir")
 def excluir_movimentos(p: Pedido) -> dict:
-    """Desfaz o efeito no estoque. Movimentos gerados por pedido não podem ser excluídos aqui."""
+    """Desfaz o efeito no estoque. Movimentos gerados por pedido (inclusive de pedido já
+    excluído) não podem ser excluídos aqui. Desfazer uma entrada que já foi consumida
+    deixaria o estoque negativo: sem `forcar`, recusa tudo (nada é alterado) e a tela
+    pede confirmação explícita."""
     db = contexto.db()
     excluidos, bloqueados = 0, 0
     with db.transaction():
         for mid in ids(p.c("ids")):
-            r = db.query("SELECT product_id, type, quantity, order_id FROM stock_movements WHERE id=?", (mid,))
+            r = db.query("""SELECT sm.product_id, sm.type, sm.quantity, sm.order_id, sm.reason, p.stock, p.name, p.unit
+                            FROM stock_movements sm LEFT JOIN products p ON p.id = sm.product_id WHERE sm.id=?""", (mid,))
             if not r:
                 continue
             m = r[0]
-            if m["order_id"] is not None:
+            if m["order_id"] is not None or (m["reason"] or "").endswith("(excluído)"):
                 bloqueados += 1
                 continue
             delta = -m["quantity"] if m["type"] == "entrada" else m["quantity"]
-            db.execute("UPDATE products SET stock = stock + ? WHERE id=?", (delta, m["product_id"]))
+            # Estoque relido a cada item (vários movimentos do mesmo produto na seleção).
+            atual = db.query("SELECT stock FROM products WHERE id=?", (m["product_id"],))
+            if delta < 0 and atual and round(atual[0][0] + delta, 3) < 0 and not p.c("forcar"):
+                raise ErroApi(f"Desfazer a entrada de {qtd_texto(m['quantity'], m['unit'])}{'' if m['unit'] == 'kg' else ' un'} de {m['name']} deixa o estoque em "
+                              f"{qtd_texto(round(atual[0][0] + delta, 3), m['unit'])}: parte disso já saiu.", 409, "estoque_negativo")
+            db.execute("UPDATE products SET stock = ROUND(stock + ?, 3) WHERE id=?", (delta, m["product_id"]))
             db.execute("DELETE FROM stock_movements WHERE id=?", (mid,))
             auditar(db, "stock_movement", mid, "delete", f"revertido: {m['type']} {m['quantity']}un")
             excluidos += 1

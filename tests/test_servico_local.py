@@ -220,14 +220,53 @@ def main() -> int:
             checar(st == 404 and js.get("codigo") == "vazio", "relatório de pedidos vazio avisa")
             opc = c.ok("GET", "/pedidos/relatorio/opcoes")
             checar("clientes" in opc, "opções do relatório")
+            rel = c.ok("POST", "/pedidos", {"customer_id": cid, "delivery_date": futuro.isoformat(),
+                                            "products": [{"product_id": pid, "quantity": 1}]})["ids"]
             for fmt in ("pdf", "xlsx"):
                 arq = os.path.join(tmp, f"ped.{fmt}")
                 c.ok("POST", "/pedidos/relatorio", {"de": "2020-01-01", "ate": "2030-12-31", "formato": fmt, "caminho": arq})
                 checar(os.path.getsize(arq) > 0, f"relatório de pedidos .{fmt}")
+            c.ok("POST", "/pedidos/excluir", {"ids": rel})
 
         print("Usuários")
-        checar(c.req("POST", "/usuarios", {"username": "func1", "password": "1234", "role": "common"})[0] == 400, "usuário novo com senha fraca é recusado")
-        uid = c.ok("POST", "/usuarios", {"username": "func1", "password": "Massa#77", "role": "common"})["id"]
+        checar(c.req("POST", "/usuarios", {"username": "func1", "password": "1234", "role": "cozinha"})[0] == 400, "usuário novo com senha fraca é recusado")
+        checar(c.req("POST", "/usuarios", {"username": "func1", "password": "Massa#77", "role": "common"})[0] == 400, "perfil antigo não é oferecido a usuário novo")
+        checar(c.req("POST", "/usuarios", {"username": "func1", "password": "Massa#77"})[0] == 400, "perfil é obrigatório")
+        uid = c.ok("POST", "/usuarios", {"username": "func1", "password": "Massa#77", "role": "cozinha"})["id"]
+        rid = c.ok("POST", "/usuarios", {"username": "balcao1", "password": "Massa#77", "role": "recepcao"})["id"]
+        perfis = {u["username"]: u["perfil"] for u in c.ok("GET", "/usuarios")["usuarios"]}
+        checar(perfis.get("func1") == "Cozinha" and perfis.get("balcao1") == "Recepção", "lista mostra o nome do perfil")
+
+        print("Perfis")
+        c.ok("POST", "/logout")
+        rec = c.ok("POST", "/login", {"usuario": "balcao1", "senha": "Massa#77"})["usuario"]
+        checar(set(rec["telas"]) == {"inicio", "pedidos", "producao", "pronta", "clientes", "produtos"} and rec["telas"]["pedidos"] == "editar"
+               and rec["telas"]["producao"] == "ver", "recepção: telas certas (pedidos/clientes editam; produção só vê)")
+        checar(c.req("GET", "/clientes")[0] == 200 and c.req("GET", "/pedidos")[0] == 200, "recepção abre clientes e pedidos")
+        checar(c.ok("GET", "/dashboard")["kpis"]["valor_mes"] is None, "recepção não vê o faturamento")
+        for m, rota_, corpo in (("GET", "/movimentos", None), ("POST", "/producao", {"product_id": pid, "quantity": 1}),
+                                ("GET", "/custos/insumos", None), ("GET", "/usuarios", None), ("GET", "/relatorios?tipo=entregas", None),
+                                ("PUT", f"/produtos/{pid}", {"name": "X"}), ("GET", "/painel-cozinha", None)):
+            st, js = c.req(m, rota_, corpo)
+            checar(st == 403, f"recepção não pode {m} {rota_}")
+        c.ok("POST", "/logout")
+        coz = c.ok("POST", "/login", {"usuario": "func1", "senha": "Massa#77"})["usuario"]
+        checar(set(coz["telas"]) == {"inicio", "pedidos", "producao", "pronta", "produtos", "movimentacao"} and coz["telas"]["pedidos"] == "ver",
+               "cozinha: telas certas (pedidos só vê)")
+        checar(c.req("GET", "/producao")[0] == 200 and c.req("GET", "/movimentos")[0] == 200 and c.req("GET", "/painel-cozinha")[0] == 200,
+               "cozinha abre produção, movimentação e o endereço do painel")
+        it = c.ok("POST", "/producao", {"product_id": pid, "quantity": 1})["id"]
+        c.ok("POST", "/producao/remover", {"ids": [it]})
+        checar("aparelhos" not in c.ok("GET", "/painel-cozinha"), "cozinha não vê a lista de aparelhos conectados")
+        for m, rota_, corpo in (("GET", "/clientes", None), ("POST", "/pedidos", {"customer_id": cid, "delivery_date": futuro.isoformat(), "products": [{"product_id": pid, "quantity": 1}]}),
+                                ("POST", "/pedidos/excluir", {"ids": [1]}), ("GET", "/custos/receitas", None), ("POST", "/usuarios", {"username": "x"}),
+                                ("POST", "/banco/backup", {}), ("POST", "/painel-cozinha/desconectar", {"todos": True})):
+            st, js = c.req(m, rota_, corpo)
+            checar(st == 403, f"cozinha não pode {m} {rota_}")
+        checar(c.req("PUT", "/minha-senha", {"atual": "errada", "nova": "Outra#2026"})[0] == 400, "cozinha pode trocar a própria senha (confere a atual)")
+        c.ok("POST", "/logout")
+        c.ok("POST", "/login", {"usuario": "admin", "senha": "Bolo!2026"})
+        c.ok("DELETE", f"/usuarios/{rid}")
         checar(c.req("POST", "/usuarios", {"username": "FUNC1", "password": "Massa#77"})[0] == 400, "usuário duplicado")
         me = c.ok("GET", "/saude")["usuario"]
         checar(c.req("DELETE", f"/usuarios/{me['id']}")[0] == 400, "não exclui a si mesmo")

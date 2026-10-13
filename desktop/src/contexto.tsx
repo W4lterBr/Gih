@@ -13,8 +13,13 @@ interface Ctx {
   /** Pede às telas abertas que releiam os dados (ex.: depois de restaurar um backup). */
   versaoDados: number;
   dadosMudaram: () => void;
-  /** Licença DWM bloqueada: telas desabilitam criar/editar (o motor também recusa). */
+  /** Licença DWM bloqueada, ou tela que o perfil só consulta: telas desabilitam criar/editar
+   *  (o motor também recusa). `motivoBloqueio` explica qual dos dois. */
   somenteLeitura: boolean;
+  motivoBloqueio: string | undefined;
+  /** Perfil do usuário: a tela aparece? pode alterar nela? */
+  ve: (tela: string) => boolean;
+  pode: (tela: string) => boolean;
   licenca: Licenca | null;
   recarregarLicenca: () => void;
 }
@@ -28,6 +33,20 @@ export interface OpcoesConfirmacao {
 }
 
 const AppCtx = createContext<Ctx | null>(null);
+
+const MOTIVO_LICENCA = "Licença bloqueada: modo somente leitura";
+const MOTIVO_PERFIL = "Seu perfil só consulta esta tela";
+
+/**
+ * Tela aberta com as regras do perfil: se o usuário só pode consultar, todos os botões
+ * que já respeitam `somenteLeitura` ficam desabilitados, com a explicação certa.
+ */
+export function ModoTela({ tela, children }: { tela: string; children: ReactNode }) {
+  const c = useApp();
+  const soVer = !c.pode(tela);
+  const valor = useMemo<Ctx>(() => (soVer && !c.somenteLeitura ? { ...c, somenteLeitura: true, motivoBloqueio: MOTIVO_PERFIL } : c), [c, soVer]);
+  return <AppCtx.Provider value={valor}>{children}</AppCtx.Provider>;
+}
 
 export function useApp(): Ctx {
   const c = useContext(AppCtx);
@@ -59,11 +78,16 @@ export function ProvedorApp({ usuario, empresa, recarregarEmpresa, licenca, reca
 
   const responder = (v: boolean) => { conf?.resolver(v); setConf(null); };
 
-  const valor = useMemo<Ctx>(() => ({
-    toast, confirmar, usuario, admin: usuario.role === "admin", empresa, recarregarEmpresa,
-    versaoDados, dadosMudaram: () => setVersaoDados((v) => v + 1),
-    somenteLeitura: !!licenca?.somente_leitura, licenca, recarregarLicenca,
-  }), [toast, confirmar, usuario, empresa, recarregarEmpresa, versaoDados, licenca, recarregarLicenca]);
+  const valor = useMemo<Ctx>(() => {
+    const telas = usuario.telas ?? {};
+    return {
+      toast, confirmar, usuario, admin: usuario.role === "admin", empresa, recarregarEmpresa,
+      versaoDados, dadosMudaram: () => setVersaoDados((v) => v + 1),
+      somenteLeitura: !!licenca?.somente_leitura, motivoBloqueio: licenca?.somente_leitura ? MOTIVO_LICENCA : undefined,
+      licenca, recarregarLicenca,
+      ve: (t: string) => !!telas[t], pode: (t: string) => telas[t] === "editar",
+    };
+  }, [toast, confirmar, usuario, empresa, recarregarEmpresa, versaoDados, licenca, recarregarLicenca]);
 
   return (
     <AppCtx.Provider value={valor}>

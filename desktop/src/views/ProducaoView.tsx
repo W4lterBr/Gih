@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { abrirUrl, api } from "../api";
 import { useApp } from "../contexto";
 import type { EstoqueProducao, ItemProducao, Produto } from "../types";
-import { fmtData, fmtInt, fmtTamanho, isoLocal } from "../format";
+import { fmtData, fmtInt, fmtQtd, fmtTamanho, isoLocal, lerQtd } from "../format";
 import { Cabecalho, Campo, CampoBusca, Modal, useCarregar, useDebounce, Vazio } from "../components/ui";
 import { Combo } from "../components/Combo";
 import { Icone } from "../components/Icone";
@@ -10,7 +10,7 @@ import { Icone } from "../components/Icone";
 function NovoItem({ onClose, onSalvo }: { onClose: () => void; onSalvo: (msg: string) => void }) {
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [produto, setProduto] = useState<number | null>(null);
-  const [qtd, setQtd] = useState(1);
+  const [qtd, setQtd] = useState("1");
   const [tam, setTam] = useState("");
   const [obs, setObs] = useState("");
   const [erro, setErro] = useState("");
@@ -18,12 +18,12 @@ function NovoItem({ onClose, onSalvo }: { onClose: () => void; onSalvo: (msg: st
   const p = produtos.find((x) => x.id === produto);
   const tamanhos = p?.size ? p.size.split(",").map((t) => t.trim()).filter(Boolean) : [];
   useEffect(() => { setTam(tamanhos[0] ?? ""); }, [produto]); // eslint-disable-line react-hooks/exhaustive-deps
-  const opcoes = useMemo(() => produtos.map((x) => ({ id: x.id, rotulo: x.name, detalhe: `${x.stock} em estoque` })), [produtos]);
+  const opcoes = useMemo(() => produtos.map((x) => ({ id: x.id, rotulo: x.name, detalhe: `${fmtQtd(x.stock, x.unit, true)} em estoque` })), [produtos]);
 
   const salvar = async () => {
     if (!produto) { setErro("Escolha o produto."); return; }
     try {
-      await api.post("/producao", { product_id: produto, quantity: qtd, size: tam, notes: obs });
+      await api.post("/producao", { product_id: produto, quantity: lerQtd(qtd), size: tam, notes: obs });
       onSalvo(`Item adicionado: ${p?.name ?? ""}`);
     } catch (e) { setErro((e as Error).message); }
   };
@@ -32,7 +32,7 @@ function NovoItem({ onClose, onSalvo }: { onClose: () => void; onSalvo: (msg: st
       rodape={<><button type="button" className="btn" onClick={onClose}>Cancelar</button><button className="btn primary">Adicionar</button></>}>
       <div className="form-grid">
         <Campo rotulo="Produto" largura="1 / -1"><Combo opcoes={opcoes} valor={produto} onChange={setProduto} placeholder="Digite para buscar…" autoFocus /></Campo>
-        <Campo rotulo="Quantidade"><input type="number" min={1} max={1000000} value={qtd} onChange={(e) => setQtd(Number(e.target.value))} /></Campo>
+        <Campo rotulo={p?.unit === "kg" ? "Quantidade (kg)" : "Quantidade"}><input inputMode={p?.unit === "kg" ? "decimal" : "numeric"} value={qtd} onChange={(e) => setQtd(e.target.value)} /></Campo>
         <Campo rotulo="Tamanho">
           <input list="tam-op" value={tam} onChange={(e) => setTam(e.target.value)} placeholder="Opcional" />
           <datalist id="tam-op">{tamanhos.map((t) => <option key={t} value={t}>{fmtTamanho(t)}</option>)}</datalist>
@@ -50,19 +50,20 @@ function Editavel({ valor, tipo = "text", onSalvar, exibir, placeholder }: {
   valor: string; tipo?: "text" | "number"; onSalvar: (v: string) => void; exibir?: (v: string) => string; placeholder?: string;
 }) {
   const [ed, setEd] = useState<string | null>(null);
+  const { somenteLeitura, motivoBloqueio } = useApp();
   if (ed === null) {
-    return <button className="editavel" onClick={() => setEd(valor)} title="Clique para editar">{(exibir ? exibir(valor) : valor) || <span className="sutil">{placeholder ?? "—"}</span>}</button>;
+    return <button className="editavel" onClick={() => setEd(valor)} disabled={somenteLeitura} title={somenteLeitura ? motivoBloqueio : "Clique para editar"}>{(exibir ? exibir(valor) : valor) || <span className="sutil">{placeholder ?? "—"}</span>}</button>;
   }
   const fim = (salvar: boolean) => { if (salvar && ed !== valor) onSalvar(ed); setEd(null); };
   return (
-    <input className="editando-cel" autoFocus type={tipo} min={tipo === "number" ? 1 : undefined} value={ed}
+    <input className="editando-cel" autoFocus inputMode={tipo === "number" ? "decimal" : undefined} value={ed}
       onChange={(e) => setEd(e.target.value)} onBlur={() => fim(true)}
       onKeyDown={(e) => { if (e.key === "Enter") fim(true); if (e.key === "Escape") { e.stopPropagation(); fim(false); } }} />
   );
 }
 
 export function ProducaoView() {
-  const { toast, confirmar, somenteLeitura } = useApp();
+  const { toast, confirmar, somenteLeitura, motivoBloqueio, pode } = useApp();
   const [dia, setDia] = useState(isoLocal());
   const [q, setQ] = useState("");
   const qd = useDebounce(q);
@@ -71,12 +72,13 @@ export function ProducaoView() {
   const { dados, recarregar } = useCarregar(() => api.get<{ itens: ItemProducao[]; estoque: EstoqueProducao[] }>("/producao", { data: dia, q: qd }), [dia, qd], 3000);
   const itens = dados?.itens ?? [];
   const estoque = dados?.estoque ?? [];
-  const totalUn = itens.reduce((s, i) => s + i.quantity, 0);
+  const totalUn = itens.reduce((s, i) => s + (i.unit === "kg" ? 0 : i.quantity), 0);
+  const totalKg = Math.round(itens.reduce((s, i) => s + (i.unit === "kg" ? i.quantity : 0), 0) * 1000) / 1000;
   const encomendas = estoque.filter((e) => e.encomendas > 0);
 
   const editar = async (i: ItemProducao, campo: "quantity" | "size" | "notes", v: string) => {
     try {
-      const corpo = campo === "quantity" ? { quantity: Number(v) } : { [campo]: v };
+      const corpo = campo === "quantity" ? { quantity: lerQtd(v) } : { [campo]: v };
       await api.put(`/producao/${i.id}`, corpo);
       toast("Item atualizado.");
       recarregar(true);
@@ -117,25 +119,25 @@ export function ProducaoView() {
 
   const abrirPainel = async () => {
     try {
-      const p = await api.get<{ url: string; local: string; pin: string }>("/painel-cozinha");
-      await navigator.clipboard.writeText(`${p.url} (PIN: ${p.pin})`).catch(() => {});
-      toast(`Painel da cozinha: ${p.url} · PIN ${p.pin} (copiado)`);
+      const p = await api.get<{ url: string; local: string }>("/painel-cozinha");
+      await navigator.clipboard.writeText(p.url).catch(() => {});
+      toast(`Painel da cozinha: ${p.url} (copiado) · entre com seu usuário e senha`);
       abrirUrl(p.local).catch(() => {});
     } catch (e) { toast((e as Error).message, true); }
   };
 
   return (
     <section className="view">
-      <Cabecalho titulo="Produção" sub={`${itens.length} item(ns) na lista · ${fmtInt(totalUn)} unidades · a cozinha vê esta lista no painel`}>
-        <button className="btn" onClick={abrirPainel}><Icone nome="celular" tam={14} />Painel da cozinha</button>
-        <button className="btn" onClick={() => importar()} disabled={somenteLeitura} title={somenteLeitura ? "Licença bloqueada: modo somente leitura" : undefined}><Icone nome="download" tam={14} />Importar pedidos do dia</button>
-        <button className="btn primary" onClick={() => setNovo(true)} disabled={somenteLeitura} title={somenteLeitura ? "Licença bloqueada: modo somente leitura" : undefined}><Icone nome="mais" tam={14} />Adicionar item</button>
+      <Cabecalho titulo="Produção" sub={`${itens.length} item(ns) na lista · ${fmtInt(totalUn)} unidades${totalKg ? ` + ${fmtQtd(totalKg, "kg")}` : ""} · a cozinha vê esta lista no painel`}>
+        {pode("producao") && <button className="btn" onClick={abrirPainel}><Icone nome="celular" tam={14} />Painel da cozinha</button>}
+        <button className="btn" onClick={() => importar()} disabled={somenteLeitura} title={somenteLeitura ? motivoBloqueio : undefined}><Icone nome="download" tam={14} />Importar pedidos do dia</button>
+        <button className="btn primary" onClick={() => setNovo(true)} disabled={somenteLeitura} title={somenteLeitura ? motivoBloqueio : undefined}><Icone nome="mais" tam={14} />Adicionar item</button>
       </Cabecalho>
       <div className="filters">
         <div className="periodo"><label>Dia dos pedidos <input type="date" value={dia} onChange={(e) => setDia(e.target.value || isoLocal())} /></label></div>
         <span className="sutil">Usado para importar e para a coluna "Encomendas".</span>
         <span className="grow" />
-        {sel.size > 0 && <button className="btn perigo" onClick={() => remover([...sel])}><Icone nome="lixo" tam={14} />Remover {sel.size}</button>}
+        {sel.size > 0 && <button className="btn perigo" onClick={() => remover([...sel])} disabled={somenteLeitura}><Icone nome="lixo" tam={14} />Remover {sel.size}</button>}
         <button className="btn" onClick={limpar} disabled={somenteLeitura}>Limpar lista</button>
       </div>
       <div className="producao">
@@ -143,14 +145,14 @@ export function ProducaoView() {
           <div className="card-cab"><b>Lista de produção</b><span className="sutil">clique num valor para editar</span></div>
           {itens.length === 0 ? (
             <Vazio icone="producao" titulo="Lista vazia" texto="Importe os pedidos do dia ou adicione itens à mão.">
-              <button className="btn" onClick={() => importar()}>Importar pedidos de {fmtData(dia)}</button>
+              <button className="btn" onClick={() => importar()} disabled={somenteLeitura}>Importar pedidos de {fmtData(dia)}</button>
             </Vazio>
           ) : (
             <div className="prod-itens">
               {itens.map((i) => (
                 <div key={i.id} className="prod-item" data-marcada={sel.has(i.id)}>
                   <label className="marca"><input type="checkbox" checked={sel.has(i.id)} onChange={(e) => setSel((s) => { const n = new Set(s); if (e.target.checked) n.add(i.id); else n.delete(i.id); return n; })} /></label>
-                  <div className="pi-qtd"><Editavel valor={String(i.quantity)} tipo="number" onSalvar={(v) => editar(i, "quantity", v)} /></div>
+                  <div className="pi-qtd"><Editavel valor={String(i.quantity).replace(".", ",")} tipo="number" exibir={() => fmtQtd(i.quantity, i.unit)} onSalvar={(v) => editar(i, "quantity", v)} /></div>
                   <div className="pi-info">
                     <b>{i.produto}</b>
                     <div className="pi-sub">
@@ -159,7 +161,7 @@ export function ProducaoView() {
                       <Editavel valor={i.notes ?? ""} placeholder="sem observação" onSalvar={(v) => editar(i, "notes", v)} />
                     </div>
                   </div>
-                  <button className="icone-btn perigo" title="Remover" onClick={() => remover([i.id])}><Icone nome="fechar" tam={14} /></button>
+                  <button className="icone-btn perigo" title="Remover" disabled={somenteLeitura} onClick={() => remover([i.id])}><Icone nome="fechar" tam={14} /></button>
                 </div>
               ))}
             </div>
@@ -173,8 +175,8 @@ export function ProducaoView() {
             {estoque.map((e) => (
               <div key={e.id} className={`el-linha${e.encomendas > e.stock ? " falta" : ""}`}>
                 <span title={e.name}>{e.name}</span>
-                <span className="num"><span className={`estq${e.stock <= 0 ? " esgotado" : e.stock < 5 ? " baixo" : ""}`}>{e.stock <= 0 ? `Esgotado${e.stock < 0 ? ` (${e.stock})` : ""}` : e.stock}</span></span>
-                <span className="num">{e.encomendas ? <b>{e.encomendas}</b> : <span className="sutil">—</span>}</span>
+                <span className="num"><span className={`estq${e.stock <= 0 ? " esgotado" : e.stock < 5 ? " baixo" : ""}`}>{e.stock <= 0 ? `Esgotado${e.stock < 0 ? ` (${fmtQtd(e.stock, e.unit)})` : ""}` : fmtQtd(e.stock, e.unit)}</span></span>
+                <span className="num">{e.encomendas ? <b>{fmtQtd(e.encomendas, e.unit)}</b> : <span className="sutil">—</span>}</span>
               </div>
             ))}
           </div>

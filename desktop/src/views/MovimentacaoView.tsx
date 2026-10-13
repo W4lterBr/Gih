@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { abrirArquivo, api, escolherSalvar } from "../api";
+import { abrirArquivo, api, escolherSalvar, type ErroMotor } from "../api";
 import { useApp } from "../contexto";
 import type { Movimento, Produto } from "../types";
-import { fmtBRL, fmtDataHora, fmtInt, isoLocal } from "../format";
+import { fmtBRL, fmtDataHora, fmtInt, fmtQtd, isoLocal, lerQtd } from "../format";
 import { BarraSelecao, Cabecalho, Campo, CampoBusca, Kpi, Modal, Tabela, useCarregar, useDebounce, Vazio, type Coluna } from "../components/ui";
 import { Combo } from "../components/Combo";
 import { Icone } from "../components/Icone";
@@ -14,26 +14,29 @@ interface Resposta {
   cores: Record<string, string>;
 }
 
-function NovoMovimento({ categorias, onClose, onSalvo }: { categorias: Resposta["categorias"]; onClose: () => void; onSalvo: (msg: string) => void }) {
+export function NovoMovimento({ categorias, onClose, onSalvo, produtoInicial }: { categorias: Resposta["categorias"]; onClose: () => void; onSalvo: (msg: string) => void; produtoInicial?: number }) {
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [tipo, setTipo] = useState<"entrada" | "saida">("entrada");
   const [categoria, setCategoria] = useState(categorias.Entrada[0]);
-  const [produto, setProduto] = useState<number | null>(null);
-  const [qtd, setQtd] = useState(1);
+  const [produto, setProduto] = useState<number | null>(produtoInicial ?? null);
+  const [qtd, setQtd] = useState("1");
   const [data, setData] = useState(isoLocal());
   const [obs, setObs] = useState("");
   const [erro, setErro] = useState("");
   useEffect(() => { api.get<{ produtos: Produto[] }>("/produtos").then((r) => setProdutos(r.produtos)).catch(() => {}); }, []);
   useEffect(() => { setCategoria(categorias[tipo === "entrada" ? "Entrada" : "Saída"][0]); }, [tipo, categorias]);
   const p = produtos.find((x) => x.id === produto);
-  const opcoes = useMemo(() => produtos.map((x) => ({ id: x.id, rotulo: x.name, detalhe: `${x.stock} em estoque` })), [produtos]);
+  const opcoes = useMemo(() => produtos.map((x) => ({ id: x.id, rotulo: x.name, detalhe: `${fmtQtd(x.stock, x.unit, true)} em estoque` })), [produtos]);
+  const n = lerQtd(qtd);
 
   const salvar = async () => {
     if (!produto) { setErro("Escolha o produto."); return; }
-    if (tipo === "saida" && p && qtd > p.stock) { setErro(`Estoque disponível: ${p.stock} un. Não é possível dar saída de ${qtd} un.`); return; }
+    if (!Number.isFinite(n) || n <= 0) { setErro("A quantidade deve ser maior que zero."); return; }
+    if (p?.unit !== "kg" && !Number.isInteger(n)) { setErro("Produto vendido por unidade: use número inteiro."); return; }
+    if (tipo === "saida" && p && n > p.stock) { setErro(`Estoque disponível: ${fmtQtd(p.stock, p.unit, true)}. Não é possível dar saída de ${fmtQtd(n, p.unit, true)}.`); return; }
     try {
-      const r = await api.post<{ produto: string }>("/movimentos", { type: tipo, category: categoria, product_id: produto, quantity: qtd, date: data, notes: obs });
-      onSalvo(`${qtd} un ${tipo === "entrada" ? "adicionadas" : "removidas"} (${categoria}) · ${r.produto}`);
+      const r = await api.post<{ produto: string }>("/movimentos", { type: tipo, category: categoria, product_id: produto, quantity: n, date: data, notes: obs });
+      onSalvo(`${fmtQtd(n, p?.unit, true)} ${tipo === "entrada" ? "a mais" : "a menos"} (${categoria}) · ${r.produto}`);
     } catch (e) { setErro((e as Error).message); }
   };
 
@@ -47,15 +50,15 @@ function NovoMovimento({ categorias, onClose, onSalvo }: { categorias: Resposta[
             <button type="button" aria-pressed={tipo === "saida"} onClick={() => setTipo("saida")}>Saída</button>
           </div>
         </Campo>
-        <Campo rotulo="Produto" largura="1 / -1" dica={p ? `Estoque atual: ${p.stock} un` : undefined}>
-          <Combo opcoes={opcoes} valor={produto} onChange={setProduto} placeholder="Digite para buscar…" autoFocus />
+        <Campo rotulo="Produto" largura="1 / -1" dica={p ? `Estoque atual: ${fmtQtd(p.stock, p.unit, true)}` : undefined}>
+          <Combo opcoes={opcoes} valor={produto} onChange={setProduto} placeholder="Digite para buscar…" autoFocus={!produtoInicial} />
         </Campo>
         <Campo rotulo="Categoria">
           <select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
             {categorias[tipo === "entrada" ? "Entrada" : "Saída"].map((c) => <option key={c}>{c}</option>)}
           </select>
         </Campo>
-        <Campo rotulo="Quantidade"><input type="number" min={1} max={999999} value={qtd} onChange={(e) => setQtd(Number(e.target.value))} /></Campo>
+        <Campo rotulo={p?.unit === "kg" ? "Quantidade (kg)" : "Quantidade"}><input inputMode={p?.unit === "kg" ? "decimal" : "numeric"} value={qtd} onChange={(e) => setQtd(e.target.value)} /></Campo>
         <Campo rotulo="Data"><input type="date" value={data} max={isoLocal()} onChange={(e) => setData(e.target.value)} /></Campo>
         <Campo rotulo="Observações" largura="1 / -1"><input value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Opcional" /></Campo>
       </div>
@@ -68,7 +71,7 @@ const FILTROS: [string, string][] = [["todas", "Todas"], ["entrada", "Entradas"]
 const PERIODOS: [string, string][] = [["hoje", "Hoje"], ["7d", "7 dias"], ["30d", "30 dias"], ["tudo", "Tudo"]];
 
 export function MovimentacaoView() {
-  const { toast, confirmar, somenteLeitura } = useApp();
+  const { toast, confirmar, somenteLeitura, motivoBloqueio } = useApp();
   const [filtro, setFiltro] = useState("todas");
   const [periodo, setPeriodo] = useState("30d");
   const [q, setQ] = useState("");
@@ -86,8 +89,17 @@ export function MovimentacaoView() {
       texto: <>O estoque de cada produto volta ao valor anterior.{dePedido > 0 && <><br />{dePedido} movimentação(ões) gerada(s) por pedido não podem ser excluídas aqui — ajuste pelo pedido.</>}</>,
     });
     if (!ok) return;
+    const enviar = (forcar: boolean) => api.post<{ excluidos: number; bloqueados: number }>("/movimentos/excluir", { ids: marcados.map((m) => m.id), forcar });
     try {
-      const r = await api.post<{ excluidos: number; bloqueados: number }>("/movimentos/excluir", { ids: marcados.map((m) => m.id) });
+      let r;
+      try { r = await enviar(false); }
+      catch (e) {
+        if ((e as ErroMotor).codigo !== "estoque_negativo") throw e;
+        const mesmoAssim = await confirmar({ titulo: "Estoque vai ficar negativo", perigo: true, ok: "Excluir mesmo assim",
+          texto: <>{(e as Error).message}<br />Só confirme se a entrada foi lançada por engano. Se as unidades existiram e já foram vendidas, deixe a entrada como está.</> });
+        if (!mesmoAssim) return;
+        r = await enviar(true);
+      }
       toast(r.bloqueados ? `${r.excluidos} excluída(s); ${r.bloqueados} gerada(s) por pedido mantida(s).` : `${r.excluidos} movimentação(ões) excluída(s) e estoque ajustado.`, !!r.bloqueados && !r.excluidos);
       setSel(new Set()); recarregar(true);
     } catch (e) { toast((e as Error).message, true); }
@@ -112,7 +124,7 @@ export function MovimentacaoView() {
     { id: "tipo", titulo: "Tipo", largura: "90px", ordenar: (m) => m.type, render: (m) => <span className={`mov ${m.type}`}>{m.type === "entrada" ? "Entrada" : "Saída"}</span> },
     { id: "cat", titulo: "Categoria", largura: "minmax(120px,1fr)", ordenar: (m) => m.category ?? "",
       render: (m) => m.category ? <span className="pill" style={{ color: cores[m.category] ?? "var(--text-2)" }}>{m.category}</span> : <span className="sutil">{m.order_id ? "Pedido" : "—"}</span> },
-    { id: "qtd", titulo: "Qtd", largura: "70px", num: true, ordenar: (m) => m.quantity, render: (m) => <span className={m.type === "entrada" ? "pos" : "neg"}>{m.type === "entrada" ? "+" : "−"}{fmtInt(m.quantity)}</span> },
+    { id: "qtd", titulo: "Qtd", largura: "70px", num: true, ordenar: (m) => m.quantity, render: (m) => <span className={m.type === "entrada" ? "pos" : "neg"}>{m.type === "entrada" ? "+" : "−"}{fmtQtd(m.quantity, m.unit)}</span> },
     { id: "motivo", titulo: "Motivo", largura: "minmax(120px,1.3fr)", render: (m) => <span className="sutil">{m.reason ?? ""}</span>, titleAttr: (m) => m.reason ?? "" },
     { id: "user", titulo: "Usuário", largura: "110px", ordenar: (m) => m.created_by ?? "", render: (m) => m.created_by ?? "—" },
   ];
@@ -121,7 +133,7 @@ export function MovimentacaoView() {
     <section className="view">
       <Cabecalho titulo="Movimentação de estoque" sub="Entradas, saídas, produção e perdas">
         <button className="btn" onClick={exportar}><Icone nome="download" tam={14} />Exportar Excel</button>
-        <button className="btn primary" onClick={() => setNovo(true)} disabled={!dados || somenteLeitura} title={somenteLeitura ? "Licença bloqueada: modo somente leitura" : undefined}><Icone nome="mais" tam={14} />Nova movimentação</button>
+        <button className="btn primary" onClick={() => setNovo(true)} disabled={!dados || somenteLeitura} title={somenteLeitura ? motivoBloqueio : undefined}><Icone nome="mais" tam={14} />Nova movimentação</button>
       </Cabecalho>
       {dados && (
         <div className="kpis kpis-4">

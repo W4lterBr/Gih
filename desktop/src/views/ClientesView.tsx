@@ -35,7 +35,7 @@ function ClienteDialog({ cliente, onClose, onSalvo }: { cliente: Cliente | null;
 }
 
 export function ClientesView() {
-  const { toast, confirmar, admin, dadosMudaram, somenteLeitura } = useApp();
+  const { toast, confirmar, admin, dadosMudaram, somenteLeitura, motivoBloqueio } = useApp();
   const [q, setQ] = useState("");
   const qd = useDebounce(q);
   const [sel, setSel] = useState<Set<number>>(new Set());
@@ -76,7 +76,7 @@ export function ClientesView() {
   return (
     <section className="view">
       <Cabecalho titulo="Clientes" sub={`${linhas.length} cliente(s)`}>
-        <button className="btn primary" onClick={() => setDialogo({ tipo: "editar", c: null })} disabled={somenteLeitura} title={somenteLeitura ? "Licença bloqueada: modo somente leitura" : undefined}><Icone nome="mais" tam={14} />Novo cliente</button>
+        <button className="btn primary" onClick={() => setDialogo({ tipo: "editar", c: null })} disabled={somenteLeitura} title={somenteLeitura ? motivoBloqueio : undefined}><Icone nome="mais" tam={14} />Novo cliente</button>
       </Cabecalho>
       <div className="filters"><CampoBusca valor={q} onChange={setQ} placeholder="Nome, telefone, endereço ou observação" /></div>
       <BarraSelecao n={marcados.length} rotulo={["cliente marcado", "clientes marcados"]} onLimpar={() => setSel(new Set())}>

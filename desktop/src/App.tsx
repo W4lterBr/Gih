@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, definirAoPerderSessao, useMotor } from "./api";
-import { ProvedorApp, useApp } from "./contexto";
+import { ModoTela, ProvedorApp, useApp } from "./contexto";
 import type { Empresa, Usuario, View } from "./types";
 import { TitleBar } from "./components/TitleBar";
-import { ITENS_CADASTRO, ITENS_OPERACAO, Sidebar } from "./components/Sidebar";
+import { ITENS_CADASTRO, ITENS_OPERACAO, Sidebar, visiveis } from "./components/Sidebar";
 import { Login, TrocaObrigatoria } from "./components/Login";
 import { BancoAusente } from "./components/BancoAusente";
 import { Palette, type Comando } from "./components/Palette";
@@ -14,6 +14,7 @@ import { ProdutosView } from "./views/ProdutosView";
 import { MovimentacaoView } from "./views/MovimentacaoView";
 import { ProducaoView } from "./views/ProducaoView";
 import { RelatoriosView } from "./views/RelatoriosView";
+import { CustosView } from "./views/CustosView";
 import { ConfigView } from "./views/ConfigView";
 import { FaixaLicenca, useLicenca } from "./licenca";
 
@@ -130,7 +131,7 @@ function Logado({ usuario, empresa, carregarEmpresa, escuro, onTema, onSair, coz
 }
 
 function Moldura({ escuro, onTema, onSair, cozinha }: { escuro: boolean; onTema: (e: boolean) => void; onSair: () => void; cozinha: string | null }) {
-  const { usuario, empresa, toast, versaoDados, dadosMudaram, admin, licenca, recarregarLicenca, somenteLeitura } = useApp();
+  const { usuario, empresa, toast, versaoDados, dadosMudaram, admin, licenca, recarregarLicenca, somenteLeitura, ve, pode } = useApp();
   const [verificando, setVerificando] = useState(false);
   const verificarLicenca = useCallback(async () => {
     setVerificando(true);
@@ -148,12 +149,15 @@ function Moldura({ escuro, onTema, onSair, cozinha }: { escuro: boolean; onTema:
   const [contagens, setContagens] = useState<{ pedidosHoje?: number; producao?: number; esgotados?: number }>({});
   const avisoSeq = useRef(0);
 
-  const irPara = useCallback((v: View) => setView(v), []);
+  // Tela que o perfil não vê (atalho, paleta, perfil trocado) volta para o Início.
+  const irPara = useCallback((v: View) => setView(v.startsWith("cfg-") || ve(v) ? v : "inicio"), [ve]);
+  useEffect(() => { if (!view.startsWith("cfg-") && !ve(view)) setView("inicio"); }, [view, ve]);
   const abrirNovoPedido = useCallback(() => {
+    if (!pode("pedidos")) { toast("Seu perfil não cria pedidos.", true); return; }
     setView("pedidos");
     if (somenteLeitura) { toast("Licença bloqueada: o sistema está em modo somente leitura.", true); return; }
     setNovoPedido(true);
-  }, [somenteLeitura, toast]);
+  }, [somenteLeitura, toast, pode]);
 
   // Contadores do menu e avisos das tarefas de fundo (reserva de estoque, backup).
   useEffect(() => {
@@ -175,14 +179,14 @@ function Moldura({ escuro, onTema, onSair, cozinha }: { escuro: boolean; onTema:
 
   // Atalhos globais.
   useEffect(() => {
-    const todas = [...ITENS_OPERACAO, ...ITENS_CADASTRO];
+    const todas = visiveis([...ITENS_OPERACAO, ...ITENS_CADASTRO], ve);
     const k = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
       const tecla = e.key.toLowerCase();
       const emCampo = !!(e.target as HTMLElement)?.closest?.("input, textarea, select");
       if (ctrl && tecla === "k") { e.preventDefault(); setPalette(true); }
       else if (ctrl && tecla === "n") { e.preventDefault(); abrirNovoPedido(); }
-      else if (ctrl && /^[1-8]$/.test(e.key)) { e.preventDefault(); const i = todas.find((x) => x.atalho === e.key); if (i) setView(i.v); }
+      else if (ctrl && /^[1-9]$/.test(e.key)) { e.preventDefault(); const i = todas.find((x) => x.atalho === e.key); if (i) setView(i.v); }
       else if (e.key === "F5") { e.preventDefault(); dadosMudaram(); }
       else if (e.key === "/" && !emCampo) {
         const busca = document.querySelector<HTMLInputElement>("[data-busca]");
@@ -191,42 +195,43 @@ function Moldura({ escuro, onTema, onSair, cozinha }: { escuro: boolean; onTema:
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
-  }, [abrirNovoPedido, dadosMudaram]);
+  }, [abrirNovoPedido, dadosMudaram, ve]);
 
   const comandos: Comando[] = useMemo(() => [
-    { titulo: "Novo pedido", dica: "Ctrl+N", run: abrirNovoPedido },
-    ...[...ITENS_OPERACAO, ...ITENS_CADASTRO].map((i) => ({ titulo: `Ir para ${i.nome}`, dica: i.atalho ? `Ctrl+${i.atalho}` : undefined, run: () => setView(i.v) })),
+    ...(pode("pedidos") ? [{ titulo: "Novo pedido", dica: "Ctrl+N", run: abrirNovoPedido }] : []),
+    ...visiveis([...ITENS_OPERACAO, ...ITENS_CADASTRO], ve).map((i) => ({ titulo: `Ir para ${i.nome}`, dica: i.atalho ? `Ctrl+${i.atalho}` : undefined, run: () => setView(i.v) })),
     ...(admin ? [
       { titulo: "Fazer backup agora", run: () => setView("cfg-banco") },
       { titulo: "Usuários", run: () => setView("cfg-usuarios") },
       { titulo: "Dados da empresa (nome e logo)", run: () => setView("cfg-empresa") },
     ] : []),
-    { titulo: "Painel da cozinha (endereço e PIN)", run: () => setView("cfg-cozinha") },
+    ...(pode("producao") ? [{ titulo: "Painel da cozinha (endereço)", run: () => setView("cfg-cozinha") }] : []),
     { titulo: "Licença DWM e faturas", run: () => setView("cfg-licenca") },
     { titulo: "Alternar tema claro/escuro", run: () => onTema(!escuro) },
     { titulo: "Trocar minha senha", run: () => setView("cfg-conta") },
     { titulo: "Recarregar dados", dica: "F5", run: dadosMudaram },
     { titulo: "Sair (trocar de usuário)", run: onSair },
-  ], [abrirNovoPedido, admin, escuro, onTema, dadosMudaram, onSair]);
+  ], [abrirNovoPedido, admin, escuro, onTema, dadosMudaram, onSair, ve, pode]);
 
   const buscar = useCallback(() => [] as Comando[], []);
   const consumirNovo = useCallback(() => setNovoPedido(false), []);
 
   return (
     <div className="window">
-      <TitleBar motor="pronto" onPalette={() => setPalette(true)} cozinha={cozinha} onCozinha={() => setView("cfg-cozinha")} />
+      <TitleBar motor="pronto" onPalette={() => setPalette(true)} cozinha={pode("producao") ? cozinha : null} onCozinha={() => setView("cfg-cozinha")} />
       <div className="body">
-        <Sidebar view={view} onView={irPara} empresa={empresa} usuario={usuario} escuro={escuro} onTema={() => onTema(!escuro)} onSair={onSair} contagens={contagens} />
+        <Sidebar view={view} onView={irPara} empresa={empresa} usuario={usuario} escuro={escuro} onTema={() => onTema(!escuro)} onSair={onSair} contagens={contagens} ve={ve} />
         <main className="main">
           <FaixaLicenca lic={licenca} admin={admin} empresa={empresa.nome} onAbrir={() => setView("cfg-licenca")} onVerificar={verificarLicenca} verificando={verificando} />
           {view === "inicio" && <InicioView onView={irPara} onNovoPedido={abrirNovoPedido} />}
-          {view === "pedidos" && <PedidosView novoPedido={novoPedido} onNovoConsumido={consumirNovo} />}
-          {view === "producao" && <ProducaoView />}
-          {view === "pronta" && <ProdutosView modo="pronta" />}
-          {view === "clientes" && <ClientesView />}
-          {view === "produtos" && <ProdutosView modo="catalogo" />}
-          {view === "movimentacao" && <MovimentacaoView />}
-          {view === "relatorios" && <RelatoriosView />}
+          {view === "pedidos" && ve("pedidos") && <ModoTela tela="pedidos"><PedidosView novoPedido={novoPedido} onNovoConsumido={consumirNovo} /></ModoTela>}
+          {view === "producao" && ve("producao") && <ModoTela tela="producao"><ProducaoView /></ModoTela>}
+          {view === "pronta" && ve("pronta") && <ModoTela tela="pronta"><ProdutosView modo="pronta" /></ModoTela>}
+          {view === "custos" && ve("custos") && <ModoTela tela="custos"><CustosView /></ModoTela>}
+          {view === "clientes" && ve("clientes") && <ModoTela tela="clientes"><ClientesView /></ModoTela>}
+          {view === "produtos" && ve("produtos") && <ModoTela tela="produtos"><ProdutosView modo="catalogo" /></ModoTela>}
+          {view === "movimentacao" && ve("movimentacao") && <ModoTela tela="movimentacao"><MovimentacaoView /></ModoTela>}
+          {view === "relatorios" && ve("relatorios") && <ModoTela tela="relatorios"><RelatoriosView /></ModoTela>}
           {view.startsWith("cfg-") && <ConfigView view={view} onView={irPara} escuro={escuro} onTema={onTema} />}
           <Palette aberta={palette} onClose={() => setPalette(false)} comandos={comandos} buscar={buscar} />
         </main>
@@ -234,7 +239,7 @@ function Moldura({ escuro, onTema, onSair, cozinha }: { escuro: boolean; onTema:
       <footer className="statusbar">
         <span>{empresa.nome}</span>
         <span className="sp" />
-        {cozinha && <span>Painel da cozinha: <b>{cozinha}</b></span>}
+        {cozinha && pode("producao") && <span>Painel da cozinha: <b>{cozinha}</b></span>}
         <span>© {new Date().getFullYear()} DWM Systems</span>
       </footer>
     </div>
